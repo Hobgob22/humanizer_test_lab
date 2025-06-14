@@ -13,7 +13,12 @@ if not env_loaded:                          # fallback so repo works OOTB
     load_dotenv(ROOT / ".env.example")
 
 # ────────────────────────────────────────────────────────────────
-# 2 · API KEYS
+# 2 · APP AUTH KEY
+# ────────────────────────────────────────────────────────────────
+APP_AUTH_KEY = os.getenv("APP_AUTH_KEY", "")
+
+# ────────────────────────────────────────────────────────────────
+# 3 · API KEYS
 # ────────────────────────────────────────────────────────────────
 OPENAI_API_KEY            = os.getenv("OPENAI_API_KEY", "")
 HUMANIZER_OPENAI_API_KEY  = os.getenv("HUMANIZER_OPENAI_API_KEY", "")
@@ -22,7 +27,7 @@ SAPLING_API_KEY           = os.getenv("SAPLING_API_KEY", "")
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY", "")
 
 # ────────────────────────────────────────────────────────────────
-# 3 · HUMANIZER MODEL LIST  (env-overrideable)
+# 4 · HUMANIZER MODEL LIST  (env-overrideable)
 # ────────────────────────────────────────────────────────────────
 _DEFAULT_MODELS = [
     "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",
@@ -35,7 +40,7 @@ _env_models = [
 HUMANIZER_MODELS: List[str] = _env_models or _DEFAULT_MODELS
 
 # ────────────────────────────────────────────────────────────────
-# 4 · GENERAL TUNABLES
+# 5 · GENERAL TUNABLES
 # ────────────────────────────────────────────────────────────────
 REHUMANIZE_N        = int(os.getenv("REHUMANIZE_N",        5))
 DEFAULT_THRESHOLD   = float(os.getenv("AI_THRESHOLD",      0.25))
@@ -43,7 +48,7 @@ MIN_WORDS_PARAGRAPH = int(os.getenv("MIN_WORDS_PARAGRAPH", 15))
 MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 
 # ────────────────────────────────────────────────────────────────
-# 5 · THREAD / ASYNC CONCURRENCY CAPS  (env-overrideable)
+# 6 · THREAD / ASYNC CONCURRENCY CAPS  (env-overrideable)
 # ────────────────────────────────────────────────────────────────
 # User-specified limits: OpenAI~50/unlimited, Gemini/Detectors ~15 rpm
 HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 50))   # OpenAI (doc mode)

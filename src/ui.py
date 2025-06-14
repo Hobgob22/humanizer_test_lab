@@ -16,6 +16,12 @@ import streamlit as st
 
 from config import OPENAI_API_KEY
 
+# ──────────────────────────── Authentication ─────────────────────────────
+from src.auth import require_login
+
+# enforce login before anything else
+require_login()
+
 # Hard-stop if the key is missing so the UI doesn't freeze later.
 if not OPENAI_API_KEY:
     raise RuntimeError(
