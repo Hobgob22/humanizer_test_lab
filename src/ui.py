@@ -17,7 +17,7 @@ import streamlit as st
 from config import OPENAI_API_KEY
 
 # ──────────────────────────── Authentication ─────────────────────────────
-from src.auth import require_login
+from auth import require_login
 
 # enforce login before anything else
 require_login()

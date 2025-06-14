@@ -1,6 +1,6 @@
 # src/auth.py
 import streamlit as st
-from .config import APP_AUTH_KEY
+from config import APP_AUTH_KEY
 
 def require_login():
     """
