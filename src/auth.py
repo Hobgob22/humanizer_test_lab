@@ -20,8 +20,13 @@ def require_login():
             if key and key == APP_AUTH_KEY:
                 st.session_state.authenticated = True
                 st.success("Welcome! 🎉")
-                # Rerun so the rest of the app shows up
-                st.experimental_rerun()
+
+                # Try to rerun; if that's unavailable, ask for manual refresh
+                if hasattr(st, "experimental_rerun"):
+                    st.experimental_rerun()
+                else:
+                    st.info("Please refresh the page to continue.")
+                    st.stop()
             else:
                 st.error("❌ Invalid key, try again.")
         # Prevent the rest of the script from running
