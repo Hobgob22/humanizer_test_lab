@@ -1,0 +1,25 @@
+"""
+Central registry of *display-name → metadata* for every humanizer
+model we want to expose in the UI / CLI.
+
+* provider   – "openai" or "gemini"
+* model      – the actual model-id used in the API call
+* prompt_id  – "default" (generic LLM) or "finetuned" (our tuned models)
+"""
+
+MODEL_REGISTRY = {
+    # ---- vanilla OpenAI ------------------------------------------------
+    "gpt-4.1":            {"provider": "openai", "model": "gpt-4.1",      "prompt_id": "default"},
+    "gpt-4.1-mini":       {"provider": "openai", "model": "gpt-4.1-mini", "prompt_id": "default"},
+    "gpt-4o":             {"provider": "openai", "model": "gpt-4o",       "prompt_id": "default"},
+
+    # ---- Gemini --------------------------------------------------------
+    "gemini-2.0-flash":        {"provider": "gemini", "model": "gemini-2.0-flash",              "prompt_id": "default"},
+    "gemini-2.0-flash-lite":   {"provider": "gemini", "model": "gemini-2.0-flash-lite",         "prompt_id": "default"},
+    "gemini-2.5-flash":        {"provider": "gemini", "model": "gemini-2.5-flash-preview-05-20","prompt_id": "default"},
+
+    # ---- our fine-tunes -----------------------------------------------
+    "gpt-4o-old-model":  {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2", "prompt_id": "finetuned"},
+    "gpt-4.1-new-model": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum30start:BcBvzILe",          "prompt_id": "finetuned"},
+    "gpt-4o-new-model":  {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw:BcCFkyvO",             "prompt_id": "finetuned"},
+}

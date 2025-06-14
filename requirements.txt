@@ -1,0 +1,14 @@
+python-docx>=1.1.0
+tqdm>=4.66
+pandas>=2.2
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.9
+seaborn>=0.13          # only for the UI histograms
+streamlit>=1.36
+requests>=2.32
+python-dotenv>=1.0
+openai>=1.23
+google-generativeai>=0.5.4  # Gemini Flash
+google-genai>=0.1.0         # new Google Gen AI SDK replacing google-generativeai
+sqlalchemy>=2.0
