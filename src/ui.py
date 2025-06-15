@@ -1301,7 +1301,6 @@ with st.sidebar.expander("🛠️ Troubleshooting"):
     - Use fullscreen mode
     """)
 
-st.sidebar.caption("Built with Streamlit")
 st.sidebar.caption(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 if PAGE == "New Run":
