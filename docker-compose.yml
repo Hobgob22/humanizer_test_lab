@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Development service with hot reload
+  humanizer-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: humanizer-testbench-dev
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+      - ./results:/app/results
+      # Mount .env file
+      - ./.env:/app/.env:ro
+    environment:
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=watchdog
+      - STREAMLIT_SERVER_RUN_ON_SAVE=true
+    profiles:
+      - dev
+    networks:
+      - humanizer-network
+    restart: unless-stopped
+
+  # Production service
+  humanizer-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: humanizer-testbench-prod
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist data directories
+      - ./data:/app/data
+      - humanizer-cache:/app/cache
+      - humanizer-logs:/app/logs
+      - humanizer-results:/app/results
+    env_file:
+      - .env
+    profiles:
+      - prod
+    networks:
+      - humanizer-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # Nginx reverse proxy for production (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: humanizer-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - humanizer-prod
+    profiles:
+      - prod-nginx
+    networks:
+      - humanizer-network
+    restart: unless-stopped
+
+volumes:
+  humanizer-cache:
+  humanizer-logs:
+  humanizer-results:
+
+networks:
+  humanizer-network:
+    driver: bridge

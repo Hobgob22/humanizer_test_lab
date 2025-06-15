@@ -1,0 +1,44 @@
+# requirements-dev.txt - Development dependencies
+
+# Include base requirements
+-r requirements.txt
+
+# Development tools
+watchdog==3.0.0              # File watching for hot reload
+ipython==8.14.0              # Enhanced Python shell
+ipdb==0.13.13                # IPython debugger
+
+# Testing
+pytest==7.4.3                # Testing framework
+pytest-cov==4.1.0            # Coverage reporting
+pytest-asyncio==0.21.1       # Async test support
+pytest-mock==3.12.0          # Mocking support
+pytest-timeout==2.2.0        # Test timeouts
+pytest-xdist==3.5.0          # Parallel test execution
+
+# Code quality
+black==23.11.0               # Code formatter
+isort==5.12.0                # Import sorting
+flake8==6.1.0                # Linting
+mypy==1.7.1                  # Type checking
+pylint==3.0.2                # Additional linting
+bandit==1.7.5                # Security linting
+
+# Documentation
+sphinx==7.2.6                # Documentation generator
+sphinx-rtd-theme==2.0.0      # ReadTheDocs theme
+myst-parser==2.0.0           # Markdown support for Sphinx
+
+# Profiling and debugging
+memory-profiler==0.61.0      # Memory profiling
+line-profiler==4.1.2         # Line-by-line profiling
+py-spy==0.3.14               # Sampling profiler
+
+# Development utilities
+python-dotenv==1.0.0         # .env file support
+pre-commit==3.5.0            # Git hooks
+httpie==3.2.2                # HTTP client for testing
+
+# Jupyter support (optional)
+jupyter==1.0.0               # Jupyter notebooks
+jupyterlab==4.0.9            # JupyterLab interface

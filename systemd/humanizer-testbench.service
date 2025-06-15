@@ -1,0 +1,52 @@
+# systemd/humanizer-testbench.service
+# Systemd service file for Humanizer Test-Bench
+# 
+# Installation:
+# 1. Copy to /etc/systemd/system/humanizer-testbench.service
+# 2. Run: systemctl daemon-reload
+# 3. Run: systemctl enable humanizer-testbench
+# 4. Run: systemctl start humanizer-testbench
+
+[Unit]
+Description=Humanizer Test-Bench
+Documentation=https://github.com/your-org/humanizer-testbench
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=unless-stopped
+RestartSec=10
+TimeoutStartSec=300
+
+# User and group (should have docker permissions)
+User=ubuntu
+Group=docker
+
+# Working directory
+WorkingDirectory=/opt/humanizer-testbench
+
+# Environment
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-/opt/humanizer-testbench/.env
+
+# Start command
+ExecStartPre=/usr/bin/docker-compose pull
+ExecStart=/usr/bin/docker-compose --profile prod up
+ExecStop=/usr/bin/docker-compose down
+
+# Health check
+ExecStartPost=/bin/sleep 10
+ExecStartPost=/opt/humanizer-testbench/scripts/health_check.sh
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=humanizer-testbench
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-# Byte‐compiled / optimized / DLL files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,27 +12,110 @@ dist/
 build/
 *.egg-info/
 *.egg
+MANIFEST
 
 # Virtual environments
 .env/
 venv/
 env/
+ENV/
 .venv/
+virtualenv/
 
 # dotenv environment variables
 .env
 .env.local
 .env.*.local
+!.env.example
 
-# VS Code settings
+# IDE settings
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-*
 
 # macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Logs
 logs/
 *.log
+*.pid
+*.seed
+*.pid.lock
 
-# SQLite databases
+# Databases
 *.sqlite
+*.db
+*.sqlite3
+*.db-journal
+
+# Data folders (keep directory structure but ignore contents)
+data/ai_texts/*
+data/human_texts/*
+data/mixed_texts/*
+!data/ai_texts/.gitkeep
+!data/human_texts/.gitkeep
+!data/mixed_texts/.gitkeep
+
+# Cache and results
+cache/*
+!cache/.gitkeep
+results/*
+!results/.gitkeep
+
+# Backups
+backups/
+*.tar.gz
+*.zip
+*.bak
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# SSL certificates
+nginx/ssl/
+*.pem
+*.key
+*.crt
+*.csr
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+htmlcov/
+.hypothesis/
+*.cover
+.coverage.*
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Temporary files
+*.tmp
+*.temp
+*.swn
+*.swm
+
+# OS generated files
+$RECYCLE.BIN/
+*.lnk
