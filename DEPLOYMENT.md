@@ -13,7 +13,7 @@ This guide covers deploying the Humanizer Test-Bench using Docker with support f
 ### 1. Clone and Setup
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Hobgob22/humanizer_test_lab.git
 cd humanizer-testbench
 cp .env.example .env
 # Edit .env and add your API keys
