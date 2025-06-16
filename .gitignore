@@ -72,8 +72,8 @@ logs/
 # Cache and results
 cache/*
 !cache/.gitkeep
-results/*
-!results/.gitkeep
+# results/*
+# !results/.gitkeep
 
 # Backups
 backups/
