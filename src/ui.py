@@ -540,23 +540,27 @@ def page_runs():
                             # GPTZero changes
                             for i, mode in enumerate(['Doc', 'Para']):
                                 mode_df = df[df['Mode'] == mode]
-                                deltas = []
-                                for model in models:
-                                    model_data = mode_df[mode_df['Model'] == model]
-                                    if not model_data.empty:
-                                        deltas.append(model_data['Δ GZ'].iloc[0])
-                                    else:
-                                        deltas.append(0)
+                                deltas = [ mode_df[mode_df['Model']==m]['Δ GZ'].iloc[0]
+                                        if not mode_df[mode_df['Model']==m].empty else 0
+                                        for m in models ]
                                 
-                                bars = ax1.bar(x + (i-0.5)*width, deltas, width, 
-                                             label=f'{mode} Mode', alpha=0.8)
+                                is_para = (mode == 'Para')
+                                bars = ax1.bar(
+                                    x + (i-0.5)*width, deltas, width,
+                                    label=f'{mode} Mode',
+                                    facecolor='none' if is_para else None,
+                                    edgecolor='black' if is_para else None,
+                                    hatch='-' if is_para else None,
+                                    alpha=0.3 if is_para else 0.8,
+                                    linewidth=1 if is_para else 0
+                                )
                                 
-                                # Color bars based on value
+                                # fill color for Doc mode, and for Para use black‐edge hatch over colored face
                                 for bar, delta in zip(bars, deltas):
-                                    if delta < 0:
-                                        bar.set_color('green')
+                                    if is_para:
+                                        bar.set_facecolor('green' if delta < 0 else 'red')
                                     else:
-                                        bar.set_color('red')
+                                        bar.set_color('green' if delta < 0 else 'red')
                             
                             ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
                             ax1.set_xlabel('Model')
@@ -570,23 +574,26 @@ def page_runs():
                             # Sapling changes
                             for i, mode in enumerate(['Doc', 'Para']):
                                 mode_df = df[df['Mode'] == mode]
-                                deltas = []
-                                for model in models:
-                                    model_data = mode_df[mode_df['Model'] == model]
-                                    if not model_data.empty:
-                                        deltas.append(model_data['Δ SP'].iloc[0])
-                                    else:
-                                        deltas.append(0)
+                                deltas = [ mode_df[mode_df['Model']==m]['Δ SP'].iloc[0]
+                                        if not mode_df[mode_df['Model']==m].empty else 0
+                                        for m in models ]
                                 
-                                bars = ax2.bar(x + (i-0.5)*width, deltas, width, 
-                                             label=f'{mode} Mode', alpha=0.8)
+                                is_para = (mode == 'Para')
+                                bars = ax2.bar(
+                                    x + (i-0.5)*width, deltas, width,
+                                    label=f'{mode} Mode',
+                                    facecolor='none' if is_para else None,
+                                    edgecolor='black' if is_para else None,
+                                    hatch='-' if is_para else None,
+                                    alpha=0.3 if is_para else 0.8,
+                                    linewidth=1 if is_para else 0
+                                )
                                 
-                                # Color bars based on value
                                 for bar, delta in zip(bars, deltas):
-                                    if delta < 0:
-                                        bar.set_color('green')
+                                    if is_para:
+                                        bar.set_facecolor('green' if delta < 0 else 'red')
                                     else:
-                                        bar.set_color('red')
+                                        bar.set_color('green' if delta < 0 else 'red')
                             
                             ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
                             ax2.set_xlabel('Model')
@@ -599,6 +606,7 @@ def page_runs():
                             
                             plt.tight_layout()
                             st.pyplot(fig)
+
                         
                         with col2:
                             st.markdown("#### Zero-shot Success & Quality")
