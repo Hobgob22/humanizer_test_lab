@@ -1,9 +1,5 @@
 # Humanizer Test Bench
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)  
-![License: MIT](https://img.shields.io/badge/License-MIT-green)  
-![CI](https://github.com/Hobgob22/humanizer_test_lab/actions/workflows/deploy.yml/badge.svg)
-
 ## Overview
 
 Humanizer Test Bench is a comprehensive toolkit for rewriting text through multiple LLM “humanizer” prompts/models and evaluating how AI detectors rate the output. It combines OpenAI and Google Gemini for rewriting, GPTZero and Sapling for detection, plus built-in quality, semantic, and statistical analyses.
