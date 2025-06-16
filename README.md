@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)  
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)  
-![CI](https://github.com/Hobgob22/humanizer_test_lab.git/actions/workflows/deploy.yml/badge.svg)
+![CI](https://github.com/Hobgob22/humanizer_test_lab/actions/workflows/deploy.yml/badge.svg)
 
 ## Overview
 
