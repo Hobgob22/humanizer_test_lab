@@ -125,8 +125,37 @@ def _detect_gptzero(text: str, paragraphs: List[str], log=None):
     _maybe_log(f"GPTZero: doc_score={doc_score}", log)
     return doc_score, para_scores
 
+def _detect_gptzero(text: str, paragraphs: List[str], log=None):
+    # try cache first
+    cached = gptzero.get("gptzero", text)
+    if cached is not None:
+        _maybe_log("GPTZero: ✨ cache hit — scores retrieved", log)
+        raw = cached
+    else:
+        _maybe_log("GPTZero: 🔄 cache miss — computing scores", log)
+        raw = gptzero.detect_ai(text)
+
+    doc_score = raw["documents"][0]["completely_generated_prob"]
+    para_raw  = raw["documents"][0].get("paragraphs") or []
+    if len(para_raw) == len(paragraphs):
+        para_scores = [p["completely_generated_prob"] for p in para_raw]
+    else:
+        para_scores = [doc_score] * len(paragraphs)
+
+    _maybe_log(f"GPTZero: doc_score={doc_score}", log)
+    return doc_score, para_scores
+
+
 def _detect_sapling(text: str, paragraphs: List[str], log=None):
-    raw = sapling.get("sapling", text) or sapling.detect_ai(text)
+    # try cache first
+    cached = sapling.get("sapling", text)
+    if cached is not None:
+        _maybe_log("Sapling: ✨ cache hit — scores retrieved", log)
+        raw = cached
+    else:
+        _maybe_log("Sapling: 🔄 cache miss — computing scores", log)
+        raw = sapling.detect_ai(text)
+
     doc_score   = raw["score"]
     sent_scores = [s["score"] for s in raw.get("sentence_scores", [])]
     para_scores, idx = [], 0
@@ -138,8 +167,11 @@ def _detect_sapling(text: str, paragraphs: List[str], log=None):
             para_scores.append(sum(chunk)/len(chunk))
         else:
             para_scores.append(doc_score)
+
     _maybe_log(f"Sapling: doc_score={doc_score}", log)
     return doc_score, para_scores
+
+
 
 def _detect_both(text: str, paras: List[str], log=None):
     """Run both detectors concurrently."""
