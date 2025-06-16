@@ -35,7 +35,7 @@ from requests.exceptions import RequestException
 from openai import OpenAI
 
 from .config import (
-    HUMANIZER_MODELS, REHUMANIZE_N,
+    REHUMANIZE_N,
     HUMANIZER_MAX_WORKERS, GEMINI_MAX_WORKERS, DETECTOR_MAX_WORKERS,
     OPENAI_API_KEY, HUMANIZER_OPENAI_API_KEY,
 )
@@ -44,6 +44,9 @@ from .docx_utils import extract_paragraphs_with_type
 from .evaluation.quality import quality
 from .humanizers.humanizer import humanize, _select_prompt
 from .models import MODEL_REGISTRY
+
+# Derive default list of models from registry display-names
+DEFAULT_HUMANIZER_MODELS = list(MODEL_REGISTRY)
 
 # ─────────────────────── Signal handling ────────────────────────
 def _sigint_handler(sig, frame):
@@ -436,7 +439,8 @@ def run_test(doc_path: Path, models: List[str]|None=None,
     orig_paras = [p["text"] for p in para_objs]
     orig_full  = "\n\n".join(orig_paras)
     wc_before  = sum(len(p.split()) for p in orig_paras)
-    models     = models or HUMANIZER_MODELS
+    models     = models or DEFAULT_HUMANIZER_MODELS
+
 
     # Phase 1: Generation
     _stage("Phase 1: Generation", logger)
