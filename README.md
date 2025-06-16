@@ -1,4 +1,3 @@
-````markdown
 # Humanizer Test Bench
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)  
@@ -223,6 +222,3 @@ Run `python -m src.cli --help` for all available options.
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
-
-```
-```
