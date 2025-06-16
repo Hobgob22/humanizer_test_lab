@@ -43,7 +43,7 @@ HUMANIZER_MODELS: List[str] = _env_models or _DEFAULT_MODELS
 # 5 · GENERAL TUNABLES
 # ────────────────────────────────────────────────────────────────
 REHUMANIZE_N        = int(os.getenv("REHUMANIZE_N",        5))
-DEFAULT_THRESHOLD   = float(os.getenv("AI_THRESHOLD",      0.25))
+ZERO_SHOT_THRESHOLD   = float(os.getenv("ZERO_SHOT_THRESHOLD",      0.10))
 MIN_WORDS_PARAGRAPH = int(os.getenv("MIN_WORDS_PARAGRAPH", 15))
 MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 

@@ -1,4 +1,4 @@
-# src/ui.py - v5.0 (Enhanced statistics view)
+# src/ui.py - v6.0 (Enhanced with zero-shot stats and descriptions)
 from __future__ import annotations
 
 import sys
@@ -14,7 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from config import OPENAI_API_KEY
+from config import OPENAI_API_KEY, ZERO_SHOT_THRESHOLD
 
 # ──────────────────────────── Authentication ─────────────────────────────
 from auth import require_login
@@ -138,6 +138,20 @@ def colored_metric(label: str, value: str, delta: float = None, help_text: str =
 # ═════════════════════════════ 1 · NEW RUN PAGE ═══════════════════════════
 def page_new_run():
     st.header("⚡️ Launch new benchmark")
+    
+    with st.expander("ℹ️ About Benchmarking", expanded=False):
+        st.markdown("""
+        **What this does:**
+        - Tests multiple humanizer models on your documents
+        - Measures AI detection scores before and after humanization
+        - Evaluates quality preservation (meaning, citations, etc.)
+        - Runs multiple iterations to ensure consistent results
+        
+        **Key metrics:**
+        - **AI Detection Scores**: Lower is better (0-1 scale)
+        - **Zero-shot Success**: % of drafts scoring below 10% AI detection
+        - **Quality Flags**: Checks if humanization preserves content integrity
+        """)
 
     run_name = st.text_input("Unique run name", placeholder="Enter a descriptive name for this benchmark run")
 
@@ -228,7 +242,7 @@ def page_new_run():
             avg_sec = (duration * 60) / len(results) if results else 0
             st.metric("⏱️ Avg time/doc", f"{avg_sec:.1f}s")
 
-# ═════════════════════════ utilities: analytics ════════════════════════════
+# ═════════════════════ utilities: analytics ════════════════════════════
 def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
     for doc in docs:
         for d in doc.get("runs", []):
@@ -238,6 +252,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
     """
     Calculate detailed statistics separated by model, mode, and folder.
     Returns nested structure: folder -> model -> mode -> stats
+    Now includes zero-shot success rates for both detectors.
     """
     # Initialize nested structure
     stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = \
@@ -281,17 +296,28 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     "wc_deltas": [],
                     "quality_flags": defaultdict(list),
                     "draft_count": 0,
-                    "mismatch_count": 0
+                    "mismatch_count": 0,
+                    "zero_shot_gz": 0,  # Count of drafts with GPTZero <= 10%
+                    "zero_shot_sp": 0,  # Count of drafts with Sapling <= 10%
                 }
             
             s = stats[folder][model][mode]
             
             # Add after scores
+            gz_after = draft["scores_after"]["group_doc"]["gptzero"]
+            sp_after = draft["scores_after"]["group_doc"]["sapling"]
+            
             s["after_scores"].append({
-                "gptzero": draft["scores_after"]["group_doc"]["gptzero"],
-                "sapling": draft["scores_after"]["group_doc"]["sapling"],
+                "gptzero": gz_after,
+                "sapling": sp_after,
                 "wordcount": draft["wordcount_after"]
             })
+            
+            # Count zero-shot successes
+            if gz_after <= ZERO_SHOT_THRESHOLD:
+                s["zero_shot_gz"] += 1
+            if sp_after <= ZERO_SHOT_THRESHOLD:
+                s["zero_shot_sp"] += 1
             
             # Word count delta
             s["wc_deltas"].append(draft["wordcount_after"] - draft["wordcount_before"])
@@ -339,7 +365,11 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                         for flag in GEMINI_FLAGS
                     },
                     "draft_count": data["draft_count"],
-                    "mismatch_rate": (data["mismatch_count"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0
+                    "mismatch_rate": (data["mismatch_count"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
+                    "zero_shot_success": {
+                        "gptzero": (data["zero_shot_gz"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
+                        "sapling": (data["zero_shot_sp"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
+                    }
                 }
     
     return result
@@ -362,9 +392,11 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
                     "Baseline GZ": f"{s['baseline']['gptzero']:.3f}",
                     "After GZ": f"{s['after']['gptzero']:.3f}",
                     "Δ GZ": s['deltas']['gptzero'],
+                    "Zero-shot GZ": f"{s['zero_shot_success']['gptzero']:.1f}%",
                     "Baseline SP": f"{s['baseline']['sapling']:.3f}",
                     "After SP": f"{s['after']['sapling']:.3f}",
                     "Δ SP": s['deltas']['sapling'],
+                    "Zero-shot SP": f"{s['zero_shot_success']['sapling']:.1f}%",
                     "Avg WC Δ": f"{s['deltas']['wordcount']:+.0f}",
                     "Quality %": f"{np.mean(list(s['quality'].values())):.1f}%",
                     "Mismatch %": f"{s['mismatch_rate']:.1f}%"
@@ -416,17 +448,19 @@ def page_runs():
     # Top-level metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("📄 Documents", len(docs))
+        st.metric("📄 Documents", len(docs), help="Total number of documents processed in this benchmark")
     with col2:
-        st.metric("📝 Total drafts", sum(len(d.get("runs", [])) for d in docs))
+        st.metric("📝 Total drafts", sum(len(d.get("runs", [])) for d in docs), 
+                  help="Total humanized drafts generated (documents × models × iterations × 2 modes)")
     with col3:
-        st.metric("🔄 Iterations", run.get("iterations", "N/A"))
+        st.metric("🔄 Iterations", run.get("iterations", "N/A"),
+                  help="Number of times each document was humanized with each model")
     with col4:
         models_used = set()
         for doc in docs:
             for draft in doc.get("runs", []):
                 models_used.add(draft["model"])
-        st.metric("🤖 Models", len(models_used))
+        st.metric("🤖 Models", len(models_used), help="Number of different humanizer models tested")
 
     # Calculate detailed statistics
     detailed_stats = _aggregate_statistics_by_model_mode_folder(docs)
@@ -442,6 +476,15 @@ def page_runs():
     
     with tab1:
         st.subheader("🎯 Detailed Statistics by Folder, Model, and Mode")
+        
+        with st.expander("ℹ️ Understanding the metrics", expanded=False):
+            st.markdown("""
+            **Key Metrics:**
+            - **Δ GZ/SP**: Change in AI detection score (negative = better)
+            - **Zero-shot**: % of drafts scoring ≤10% on AI detection
+            - **Quality %**: Average of all quality checks (meaning, citations, etc.)
+            - **Mismatch %**: Drafts where paragraph count changed
+            """)
         
         # Group folders by type
         folder_order = ["ai_texts", "human_texts", "mixed_texts"]
@@ -463,20 +506,38 @@ def page_runs():
                                     return 'color: red'
                             return ''
                         
-                        styled_df = df.style.applymap(style_delta, subset=['Δ GZ', 'Δ SP'])
+                        def style_zero_shot(val):
+                            if isinstance(val, str) and val.endswith('%'):
+                                num_val = float(val.rstrip('%'))
+                                if num_val >= 80:
+                                    return 'color: green; font-weight: bold'
+                                elif num_val >= 50:
+                                    return 'color: orange'
+                                else:
+                                    return 'color: red'
+                            return ''
+                        
+                        styled_df = df.style.applymap(
+                            style_delta, subset=['Δ GZ', 'Δ SP']
+                        ).applymap(
+                            style_zero_shot, subset=['Zero-shot GZ', 'Zero-shot SP']
+                        )
                         st.dataframe(styled_df, use_container_width=True, hide_index=True)
                         
                         # Visualizations for this folder
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.markdown("#### GPTZero Score Changes")
-                            fig, ax = plt.subplots(figsize=(8, 6))
+                            st.markdown("#### AI Detection Score Changes")
+                            st.caption("Shows how much the AI detection scores changed after humanization")
+                            
+                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
                             
                             models = df['Model'].unique()
                             x = np.arange(len(models))
                             width = 0.35
                             
+                            # GPTZero changes
                             for i, mode in enumerate(['Doc', 'Para']):
                                 mode_df = df[df['Mode'] == mode]
                                 deltas = []
@@ -487,7 +548,7 @@ def page_runs():
                                     else:
                                         deltas.append(0)
                                 
-                                bars = ax.bar(x + (i-0.5)*width, deltas, width, 
+                                bars = ax1.bar(x + (i-0.5)*width, deltas, width, 
                                              label=f'{mode} Mode', alpha=0.8)
                                 
                                 # Color bars based on value
@@ -497,22 +558,83 @@ def page_runs():
                                     else:
                                         bar.set_color('red')
                             
-                            ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                            ax.set_xlabel('Model')
-                            ax.set_ylabel('GPTZero Score Change')
-                            ax.set_title(f'GPTZero Score Changes - {folder.replace("_", " ").title()}')
-                            ax.set_xticks(x)
-                            ax.set_xticklabels(models, rotation=45, ha='right')
-                            ax.legend()
-                            ax.grid(True, alpha=0.3)
+                            ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                            ax1.set_xlabel('Model')
+                            ax1.set_ylabel('GPTZero Score Change')
+                            ax1.set_title(f'GPTZero Score Changes - {folder.replace("_", " ").title()}')
+                            ax1.set_xticks(x)
+                            ax1.set_xticklabels(models, rotation=45, ha='right')
+                            ax1.legend()
+                            ax1.grid(True, alpha=0.3)
+                            
+                            # Sapling changes
+                            for i, mode in enumerate(['Doc', 'Para']):
+                                mode_df = df[df['Mode'] == mode]
+                                deltas = []
+                                for model in models:
+                                    model_data = mode_df[mode_df['Model'] == model]
+                                    if not model_data.empty:
+                                        deltas.append(model_data['Δ SP'].iloc[0])
+                                    else:
+                                        deltas.append(0)
+                                
+                                bars = ax2.bar(x + (i-0.5)*width, deltas, width, 
+                                             label=f'{mode} Mode', alpha=0.8)
+                                
+                                # Color bars based on value
+                                for bar, delta in zip(bars, deltas):
+                                    if delta < 0:
+                                        bar.set_color('green')
+                                    else:
+                                        bar.set_color('red')
+                            
+                            ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                            ax2.set_xlabel('Model')
+                            ax2.set_ylabel('Sapling Score Change')
+                            ax2.set_title(f'Sapling Score Changes - {folder.replace("_", " ").title()}')
+                            ax2.set_xticks(x)
+                            ax2.set_xticklabels(models, rotation=45, ha='right')
+                            ax2.legend()
+                            ax2.grid(True, alpha=0.3)
                             
                             plt.tight_layout()
                             st.pyplot(fig)
                         
                         with col2:
-                            st.markdown("#### Quality Scores")
-                            fig, ax = plt.subplots(figsize=(8, 6))
+                            st.markdown("#### Zero-shot Success & Quality")
+                            st.caption("Zero-shot: % of drafts with ≤10% AI score | Quality: content preservation")
                             
+                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+                            
+                            # Zero-shot success rates
+                            bar_width = 0.2
+                            x = np.arange(len(df['Model'].unique()))
+                            
+                            for i, (mode, detector) in enumerate([('Doc', 'GZ'), ('Doc', 'SP'), ('Para', 'GZ'), ('Para', 'SP')]):
+                                mode_df = df[df['Mode'] == mode.title()]
+                                col_name = f'Zero-shot {detector}'
+                                values = []
+                                for model in models:
+                                    model_data = mode_df[mode_df['Model'] == model]
+                                    if not model_data.empty:
+                                        val = float(model_data[col_name].iloc[0].rstrip('%'))
+                                        values.append(val)
+                                    else:
+                                        values.append(0)
+                                
+                                ax1.bar(x + (i-1.5)*bar_width, values, bar_width, 
+                                       label=f'{mode} {detector}', alpha=0.8)
+                            
+                            ax1.set_xlabel('Model')
+                            ax1.set_ylabel('Zero-shot Success Rate (%)')
+                            ax1.set_title(f'Zero-shot Success Rates - {folder.replace("_", " ").title()}')
+                            ax1.set_xticks(x)
+                            ax1.set_xticklabels(models, rotation=45, ha='right')
+                            ax1.legend()
+                            ax1.set_ylim(0, 100)
+                            ax1.grid(True, alpha=0.3)
+                            
+                            # Quality scores
                             quality_data = []
                             labels = []
                             for _, row in df.iterrows():
@@ -520,7 +642,7 @@ def page_runs():
                                 quality_data.append(quality)
                                 labels.append(f"{row['Model']}\n({row['Mode']})")
                             
-                            bars = ax.bar(range(len(quality_data)), quality_data, alpha=0.8)
+                            bars = ax2.bar(range(len(quality_data)), quality_data, alpha=0.8)
                             
                             # Color bars based on quality
                             for bar, q in zip(bars, quality_data):
@@ -531,13 +653,13 @@ def page_runs():
                                 else:
                                     bar.set_color('red')
                             
-                            ax.set_xlabel('Model & Mode')
-                            ax.set_ylabel('Average Quality Score (%)')
-                            ax.set_title(f'Quality Scores - {folder.replace("_", " ").title()}')
-                            ax.set_xticks(range(len(labels)))
-                            ax.set_xticklabels(labels, rotation=45, ha='right')
-                            ax.set_ylim(0, 100)
-                            ax.grid(True, alpha=0.3)
+                            ax2.set_xlabel('Model & Mode')
+                            ax2.set_ylabel('Average Quality Score (%)')
+                            ax2.set_title(f'Quality Scores - {folder.replace("_", " ").title()}')
+                            ax2.set_xticks(range(len(labels)))
+                            ax2.set_xticklabels(labels, rotation=45, ha='right')
+                            ax2.set_ylim(0, 100)
+                            ax2.grid(True, alpha=0.3)
                             
                             plt.tight_layout()
                             st.pyplot(fig)
@@ -547,10 +669,19 @@ def page_runs():
     with tab2:
         st.subheader("📈 Model Performance Across All Folders")
         
+        with st.expander("ℹ️ About this view", expanded=False):
+            st.markdown("""
+            This view aggregates model performance across all document folders,
+            helping identify which models perform best overall. Lower AI detection
+            scores and higher zero-shot success rates indicate better performance.
+            """)
+        
         # Aggregate model performance across folders
         model_perf = defaultdict(lambda: {
-            "doc": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0},
-            "para": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0}
+            "doc": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0, 
+                    "zero_shot_gz": [], "zero_shot_sp": []},
+            "para": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0,
+                     "zero_shot_gz": [], "zero_shot_sp": []}
         })
         
         for folder, models in detailed_stats.items():
@@ -560,6 +691,8 @@ def page_runs():
                     model_perf[model][mode]["sp_deltas"].append(stats["deltas"]["sapling"])
                     model_perf[model][mode]["quality"].append(np.mean(list(stats["quality"].values())))
                     model_perf[model][mode]["count"] += stats["draft_count"]
+                    model_perf[model][mode]["zero_shot_gz"].append(stats["zero_shot_success"]["gptzero"])
+                    model_perf[model][mode]["zero_shot_sp"].append(stats["zero_shot_success"]["sapling"])
         
         # Create summary table
         rows = []
@@ -572,6 +705,8 @@ def page_runs():
                         "Total Drafts": modes[mode]["count"],
                         "Avg Δ GZ": np.mean(modes[mode]["gz_deltas"]),
                         "Avg Δ SP": np.mean(modes[mode]["sp_deltas"]),
+                        "Zero-shot GZ": f"{np.mean(modes[mode]['zero_shot_gz']):.1f}%",
+                        "Zero-shot SP": f"{np.mean(modes[mode]['zero_shot_sp']):.1f}%",
                         "Avg Quality": f"{np.mean(modes[mode]['quality']):.1f}%",
                         "Folders": len(modes[mode]["gz_deltas"])
                     })
@@ -587,7 +722,22 @@ def page_runs():
                         return 'color: red; font-weight: bold'
                 return ''
             
-            styled_perf = perf_df.style.applymap(style_delta, subset=['Avg Δ GZ', 'Avg Δ SP']).format({
+            def style_zero_shot(val):
+                if isinstance(val, str) and val.endswith('%'):
+                    num_val = float(val.rstrip('%'))
+                    if num_val >= 80:
+                        return 'color: green; font-weight: bold'
+                    elif num_val >= 50:
+                        return 'color: orange'
+                    else:
+                        return 'color: red'
+                return ''
+            
+            styled_perf = perf_df.style.applymap(
+                style_delta, subset=['Avg Δ GZ', 'Avg Δ SP']
+            ).applymap(
+                style_zero_shot, subset=['Zero-shot GZ', 'Zero-shot SP']
+            ).format({
                 'Avg Δ GZ': '{:.3f}',
                 'Avg Δ SP': '{:.3f}'
             })
@@ -595,21 +745,50 @@ def page_runs():
             
             # Best performers
             st.markdown("### 🏆 Best Performers")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("#### Best GPTZero Reduction")
+                st.markdown("#### Best AI Score Reduction")
+                st.caption("Models achieving the largest decrease in AI detection scores")
+                
+                # GPTZero
                 best_gz = perf_df.nsmallest(5, 'Avg Δ GZ')[['Model', 'Mode', 'Avg Δ GZ']]
+                st.markdown("**GPTZero:**")
                 st.dataframe(best_gz, use_container_width=True, hide_index=True)
+                
+                # Sapling
+                best_sp = perf_df.nsmallest(5, 'Avg Δ SP')[['Model', 'Mode', 'Avg Δ SP']]
+                st.markdown("**Sapling:**")
+                st.dataframe(best_sp, use_container_width=True, hide_index=True)
             
             with col2:
-                st.markdown("#### Best Quality Scores")
-                perf_df['Quality_numeric'] = perf_df['Avg Quality'].str.rstrip('%').astype(float)
-                best_quality = perf_df.nlargest(5, 'Quality_numeric')[['Model', 'Mode', 'Avg Quality']]
-                st.dataframe(best_quality, use_container_width=True, hide_index=True)
+                st.markdown("#### Best Zero-shot Success")
+                st.caption("Models with highest % of drafts scoring ≤10% AI detection")
+                
+                # GPTZero zero-shot
+                perf_df['ZS_GZ_numeric'] = perf_df['Zero-shot GZ'].str.rstrip('%').astype(float)
+                best_zs_gz = perf_df.nlargest(5, 'ZS_GZ_numeric')[['Model', 'Mode', 'Zero-shot GZ']]
+                st.markdown("**GPTZero Zero-shot:**")
+                st.dataframe(best_zs_gz, use_container_width=True, hide_index=True)
+                
+                # Sapling zero-shot
+                perf_df['ZS_SP_numeric'] = perf_df['Zero-shot SP'].str.rstrip('%').astype(float)
+                best_zs_sp = perf_df.nlargest(5, 'ZS_SP_numeric')[['Model', 'Mode', 'Zero-shot SP']]
+                st.markdown("**Sapling Zero-shot:**")
+                st.dataframe(best_zs_sp, use_container_width=True, hide_index=True)
     
     with tab3:
         st.subheader("📁 Performance Summary by Folder")
+        
+        with st.expander("ℹ️ About folder types", expanded=False):
+            st.markdown("""
+            - **AI texts**: Documents originally generated by AI
+            - **Human texts**: Documents originally written by humans
+            - **Mixed texts**: Documents with both AI and human content
+            
+            Performance varies by folder type - AI texts typically show larger improvements.
+            """)
         
         folder_summary = []
         for folder, models in detailed_stats.items():
@@ -617,6 +796,8 @@ def page_runs():
             all_gz_deltas = []
             all_sp_deltas = []
             all_quality = []
+            all_zero_shot_gz = []
+            all_zero_shot_sp = []
             
             for model, modes in models.items():
                 for mode, stats in modes.items():
@@ -624,6 +805,8 @@ def page_runs():
                     all_gz_deltas.append(stats["deltas"]["gptzero"])
                     all_sp_deltas.append(stats["deltas"]["sapling"])
                     all_quality.append(np.mean(list(stats["quality"].values())))
+                    all_zero_shot_gz.append(stats["zero_shot_success"]["gptzero"])
+                    all_zero_shot_sp.append(stats["zero_shot_success"]["sapling"])
             
             if total_drafts > 0:
                 folder_summary.append({
@@ -632,6 +815,8 @@ def page_runs():
                     "Models": len(models),
                     "Avg Δ GZ": np.mean(all_gz_deltas),
                     "Avg Δ SP": np.mean(all_sp_deltas),
+                    "Zero-shot GZ": f"{np.mean(all_zero_shot_gz):.1f}%",
+                    "Zero-shot SP": f"{np.mean(all_zero_shot_sp):.1f}%",
                     "Avg Quality": f"{np.mean(all_quality):.1f}%"
                 })
         
@@ -648,30 +833,66 @@ def page_runs():
             st.dataframe(styled_folder, use_container_width=True, hide_index=True)
             
             # Visualization
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
             
-            # GPTZero changes by folder
             folders = folder_df['Folder'].tolist()
+            
+            # AI Score changes by folder
             gz_deltas = folder_df['Avg Δ GZ'].tolist()
-            
-            bars1 = ax1.bar(folders, gz_deltas, alpha=0.8)
-            for bar, delta in zip(bars1, gz_deltas):
-                if delta < 0:
-                    bar.set_color('green')
-                else:
-                    bar.set_color('red')
-            
+            sp_deltas = folder_df['Avg Δ SP'].tolist()
+
+            x = np.arange(len(folders))
+            width = 0.35
+
+            bars1 = ax1.bar(
+                x - width/2, gz_deltas, width,
+                label='GPTZero',
+                color='green',
+                alpha=0.8
+            )
+
+            bars2 = ax1.bar(
+                x + width/2, sp_deltas, width,
+                label='Sapling',
+                hatch='-',
+                edgecolor='black',
+                alpha=0.8
+            )
+
+            for bar, delta in zip(bars2, sp_deltas):
+                bar.set_facecolor('green' if delta < 0 else 'red')
+
             ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
             ax1.set_xlabel('Folder')
-            ax1.set_ylabel('Average GPTZero Change')
-            ax1.set_title('Average GPTZero Score Changes by Folder')
+            ax1.set_ylabel('Average Score Change')
+            ax1.set_title('Average AI Detection Score Changes by Folder')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(folders)
+            ax1.legend()
             ax1.grid(True, alpha=0.3)
+
+            
+            # Zero-shot success by folder
+            zs_gz_vals = [float(q.rstrip('%')) for q in folder_df['Zero-shot GZ']]
+            zs_sp_vals = [float(q.rstrip('%')) for q in folder_df['Zero-shot SP']]
+            
+            bars3 = ax2.bar(x - width/2, zs_gz_vals, width, label='GPTZero', alpha=0.8)
+            bars4 = ax2.bar(x + width/2, zs_sp_vals, width, label='Sapling', alpha=0.8)
+            
+            ax2.set_xlabel('Folder')
+            ax2.set_ylabel('Zero-shot Success Rate (%)')
+            ax2.set_title('Zero-shot Success Rates by Folder')
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(folders)
+            ax2.set_ylim(0, 100)
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
             
             # Quality by folder
             quality_vals = [float(q.rstrip('%')) for q in folder_df['Avg Quality']]
-            bars2 = ax2.bar(folders, quality_vals, alpha=0.8)
+            bars5 = ax3.bar(folders, quality_vals, alpha=0.8)
             
-            for bar, q in zip(bars2, quality_vals):
+            for bar, q in zip(bars5, quality_vals):
                 if q >= 80:
                     bar.set_color('green')
                 elif q >= 60:
@@ -679,51 +900,94 @@ def page_runs():
                 else:
                     bar.set_color('red')
             
-            ax2.set_xlabel('Folder')
-            ax2.set_ylabel('Average Quality Score (%)')
-            ax2.set_title('Average Quality Scores by Folder')
-            ax2.set_ylim(0, 100)
-            ax2.grid(True, alpha=0.3)
+            ax3.set_xlabel('Folder')
+            ax3.set_ylabel('Average Quality Score (%)')
+            ax3.set_title('Average Quality Scores by Folder')
+            ax3.set_ylim(0, 100)
+            ax3.grid(True, alpha=0.3)
+            
+            # Combined metric radar chart
+            categories = ['GZ Reduction', 'SP Reduction', 'ZS GZ', 'ZS SP', 'Quality']
+            
+            for i, folder_row in folder_df.iterrows():
+                # Normalize values for radar (0-1 scale)
+                values = [
+                    max(0, -folder_row['Avg Δ GZ'] / 0.5),  # Normalize reduction (0.5 = max expected)
+                    max(0, -folder_row['Avg Δ SP'] / 0.5),
+                    zs_gz_vals[i] / 100,
+                    zs_sp_vals[i] / 100,
+                    quality_vals[i] / 100
+                ]
+                values += values[:1]  # Complete the circle
+                
+                angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False)
+                angles = np.concatenate([angles, [angles[0]]])
+                
+                ax4.plot(angles, values, 'o-', linewidth=2, label=folder_row['Folder'])
+                ax4.fill(angles, values, alpha=0.25)
+            
+            ax4.set_xticks(angles[:-1])
+            ax4.set_xticklabels(categories)
+            ax4.set_ylim(0, 1)
+            ax4.set_title('Normalized Performance Metrics by Folder')
+            ax4.legend()
+            ax4.grid(True)
             
             plt.tight_layout()
             st.pyplot(fig)
     
     with tab4:
         st.subheader("📊 Score Distributions")
+        
+        with st.expander("ℹ️ Understanding distributions", expanded=False):
+            st.markdown("""
+            These histograms show the spread of AI detection scores after humanization.
+            - **Red line**: Average baseline score (before humanization)
+            - **Bars**: Distribution of scores after humanization
+            - **Left is better**: Lower scores indicate better humanization
+            """)
 
         # Build lookup dict
-        by_model_mode_folder = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        by_model_mode_folder = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"gz": [], "sp": []})))
         
         # Also calculate folder baselines
-        folder_baselines = defaultdict(list)
+        folder_baselines = defaultdict(lambda: {"gz": [], "sp": []})
         for doc in docs:
             folder = doc.get("folder", "unknown")
             if doc.get("runs"):
                 # Get baseline from first run (all runs have same baseline)
                 baseline_gz = doc["runs"][0]["scores_before"]["group_doc"]["gptzero"]
-                folder_baselines[folder].append(baseline_gz)
+                baseline_sp = doc["runs"][0]["scores_before"]["group_doc"]["sapling"]
+                folder_baselines[folder]["gz"].append(baseline_gz)
+                folder_baselines[folder]["sp"].append(baseline_sp)
                 
                 for draft in doc.get("runs", []):
-                    s = draft["scores_after"]["group_doc"]["gptzero"]
-                    by_model_mode_folder[folder][draft["model"]][draft["mode"]].append(s)
+                    gz_score = draft["scores_after"]["group_doc"]["gptzero"]
+                    sp_score = draft["scores_after"]["group_doc"]["sapling"]
+                    by_model_mode_folder[folder][draft["model"]][draft["mode"]]["gz"].append(gz_score)
+                    by_model_mode_folder[folder][draft["model"]][draft["mode"]]["sp"].append(sp_score)
 
         # Create distribution plots by folder
         for folder in ["ai_texts", "human_texts", "mixed_texts"]:
             if folder in by_model_mode_folder:
                 st.markdown(f"### 📁 {folder.replace('_', ' ').title()}")
                 
+                # GPTZero distributions
+                st.markdown("#### GPTZero Score Distributions")
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
                 
                 # Get average baseline for this folder
                 if folder in folder_baselines:
-                    avg_baseline_gz = np.mean(folder_baselines[folder])
-                    ax1.axvline(avg_baseline_gz, color="red", linestyle="--", label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
-                    ax2.axvline(avg_baseline_gz, color="red", linestyle="--", label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
+                    avg_baseline_gz = np.mean(folder_baselines[folder]["gz"])
+                    ax1.axvline(avg_baseline_gz, color="red", linestyle="--", 
+                               label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
+                    ax2.axvline(avg_baseline_gz, color="red", linestyle="--", 
+                               label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
                 
                 # Doc mode distributions
                 for model, modes in by_model_mode_folder[folder].items():
-                    if "doc" in modes:
-                        _safe_hist(ax1, modes["doc"], bins=20, alpha=0.5, label=model)
+                    if "doc" in modes and modes["doc"]["gz"]:
+                        _safe_hist(ax1, modes["doc"]["gz"], bins=20, alpha=0.5, label=model)
                 
                 ax1.set_title(f"Document Mode - {folder.replace('_', ' ').title()}")
                 ax1.set_xlabel("GPTZero Score")
@@ -733,11 +997,48 @@ def page_runs():
                 
                 # Para mode distributions
                 for model, modes in by_model_mode_folder[folder].items():
-                    if "para" in modes:
-                        _safe_hist(ax2, modes["para"], bins=20, alpha=0.5, label=model)
+                    if "para" in modes and modes["para"]["gz"]:
+                        _safe_hist(ax2, modes["para"]["gz"], bins=20, alpha=0.5, label=model)
                 
                 ax2.set_title(f"Paragraph Mode - {folder.replace('_', ' ').title()}")
                 ax2.set_xlabel("GPTZero Score")
+                ax2.set_ylabel("Frequency")
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+                # Sapling distributions
+                st.markdown("#### Sapling Score Distributions")
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # Get average baseline for this folder
+                if folder in folder_baselines:
+                    avg_baseline_sp = np.mean(folder_baselines[folder]["sp"])
+                    ax1.axvline(avg_baseline_sp, color="red", linestyle="--", 
+                               label=f"Baseline (avg: {avg_baseline_sp:.3f})", alpha=0.7)
+                    ax2.axvline(avg_baseline_sp, color="red", linestyle="--", 
+                               label=f"Baseline (avg: {avg_baseline_sp:.3f})", alpha=0.7)
+                
+                # Doc mode distributions
+                for model, modes in by_model_mode_folder[folder].items():
+                    if "doc" in modes and modes["doc"]["sp"]:
+                        _safe_hist(ax1, modes["doc"]["sp"], bins=20, alpha=0.5, label=model)
+                
+                ax1.set_title(f"Document Mode - {folder.replace('_', ' ').title()}")
+                ax1.set_xlabel("Sapling Score")
+                ax1.set_ylabel("Frequency")
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                
+                # Para mode distributions
+                for model, modes in by_model_mode_folder[folder].items():
+                    if "para" in modes and modes["para"]["sp"]:
+                        _safe_hist(ax2, modes["para"]["sp"], bins=20, alpha=0.5, label=model)
+                
+                ax2.set_title(f"Paragraph Mode - {folder.replace('_', ' ').title()}")
+                ax2.set_xlabel("Sapling Score")
                 ax2.set_ylabel("Frequency")
                 ax2.legend()
                 ax2.grid(True, alpha=0.3)
@@ -748,6 +1049,15 @@ def page_runs():
     
     with tab5:
         st.subheader("📄 Document List")
+        
+        with st.expander("ℹ️ About documents", expanded=False):
+            st.markdown("""
+            Click "View" to see detailed results for any document, including:
+            - All humanized drafts
+            - Paragraph-by-paragraph analysis
+            - Quality check results
+            - Score comparisons
+            """)
         
         # Group documents by folder
         groups: DefaultDict[str, List[str]] = defaultdict(list)
@@ -803,10 +1113,14 @@ def _render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
     gz_color = "🟢" if gz_delta < 0 else "🔴" if gz_delta > 0 else "⚪"
     sp_color = "🟢" if sp_delta < 0 else "🔴" if sp_delta > 0 else "⚪"
     
+    # Check zero-shot success
+    gz_zeroshot = "✅" if sa['gptzero'] <= ZERO_SHOT_THRESHOLD else ""
+    sp_zeroshot = "✅" if sa['sapling'] <= ZERO_SHOT_THRESHOLD else ""
+    
     title = (
         f"{status_emoji} Draft {draft['iter']+1} | "
-        f"GZ: {sa['gptzero']:.2f} ({gz_color}{gz_delta:+.2f}) | "
-        f"SP: {sa['sapling']:.2f} ({sp_color}{sp_delta:+.2f}) | "
+        f"GZ: {sa['gptzero']:.2f} ({gz_color}{gz_delta:+.2f}) {gz_zeroshot} | "
+        f"SP: {sa['sapling']:.2f} ({sp_color}{sp_delta:+.2f}) {sp_zeroshot} | "
         f"WC: {wc_delta:+d} | "
         f"Quality: {quality_score:.0f}%"
     )
@@ -837,6 +1151,12 @@ def _render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
             with col4:
                 st.metric("Overall Quality", f"{quality_score:.1f}%")
             
+            # Zero-shot indicators
+            if sa['gptzero'] <= ZERO_SHOT_THRESHOLD or sa['sapling'] <= ZERO_SHOT_THRESHOLD:
+                st.success(f"✅ Zero-shot success: " + 
+                          (f"GPTZero ({sa['gptzero']:.3f}) " if sa['gptzero'] <= ZERO_SHOT_THRESHOLD else "") +
+                          (f"Sapling ({sa['sapling']:.3f})" if sa['sapling'] <= ZERO_SHOT_THRESHOLD else ""))
+            
             # Detailed paragraph analysis
             if draft.get("paragraph_details"):
                 st.markdown("### 📊 Paragraph-by-Paragraph Analysis")
@@ -848,6 +1168,7 @@ def _render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                     
                     # Calculate deltas
                     gz_delta_para = p['ai_after']['gptzero'] - p['ai_before']['gptzero']
+                    sp_delta_para = p['ai_after']['sapling'] - p['ai_before']['sapling']
                     
                     row = {
                         "¶": p["paragraph"],
@@ -855,6 +1176,9 @@ def _render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                         "GZ Before": f"{p['ai_before']['gptzero']:.2f}",
                         "GZ After": f"{p['ai_after']['gptzero']:.2f}",
                         "GZ Δ": gz_delta_para,
+                        "SP Before": f"{p['ai_before']['sapling']:.2f}",
+                        "SP After": f"{p['ai_after']['sapling']:.2f}",
+                        "SP Δ": sp_delta_para,
                         "Quality": f"{para_quality:.0f}%",
                     }
                     
@@ -889,12 +1213,13 @@ def _render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                     subset=['WC Δ']
                 ).applymap(
                     color_delta,
-                    subset=['GZ Δ']
+                    subset=['GZ Δ', 'SP Δ']
                 ).applymap(
                     lambda x: 'background-color: #90EE90' if x == "✅" else 'background-color: #FFB6C1' if x == "❌" else '',
                     subset=[col for col in df.columns if col in ['Length OK', 'Same Meaning', 'Same Language', 'No Missing Info', 'Citation Preserved', 'Citation Content OK']]
                 ).format({
-                    'GZ Δ': '{:+.3f}'
+                    'GZ Δ': '{:+.3f}',
+                    'SP Δ': '{:+.3f}'
                 })
                 
                 st.dataframe(
@@ -959,14 +1284,18 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in model_drafts])
                 avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in model_drafts])
                 avg_wc_delta = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in model_drafts])
+                zero_shot_gz = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                zero_shot_sp = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
                 with col2:
                     colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
                 with col3:
                     st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
+                with col4:
+                    st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(model_drafts)} SP:{zero_shot_sp}/{len(model_drafts)}")
                 
                 # Individual drafts
                 for dr in sorted(model_drafts, key=lambda x: x["iter"]):
@@ -987,14 +1316,18 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in model_drafts])
                 avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in model_drafts])
                 avg_wc_delta = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in model_drafts])
+                zero_shot_gz = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                zero_shot_sp = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
                 with col2:
                     colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
                 with col3:
                     st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
+                with col4:
+                    st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(model_drafts)} SP:{zero_shot_sp}/{len(model_drafts)}")
                 
                 # Individual drafts
                 for dr in sorted(model_drafts, key=lambda x: x["iter"]):
@@ -1005,6 +1338,14 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
     with tab3:
         st.markdown("### Model Comparison")
         
+        with st.expander("ℹ️ Understanding comparisons", expanded=False):
+            st.markdown("""
+            This table compares all models tested on this document:
+            - **Δ GZ/SP**: Change from baseline (negative = improvement)
+            - **Zero-shot**: Number of drafts achieving ≤10% AI detection
+            - **Quality**: Average content preservation score
+            """)
+        
         # Prepare comparison data
         comparison_data = []
         for model in sorted(by_model):
@@ -1014,6 +1355,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in drafts])
                     avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in drafts])
                     avg_wc = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in drafts])
+                    
+                    # Count zero-shot successes
+                    zero_shot_gz = sum(1 for d in drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                    zero_shot_sp = sum(1 for d in drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                     
                     # Calculate average quality
                     quality_scores = []
@@ -1026,10 +1371,13 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     comparison_data.append({
                         "Model": model,
                         "Mode": mode.title(),
+                        "Drafts": len(drafts),
                         "Avg GPTZero": f"{avg_gz:.3f}",
                         "Δ GZ": avg_gz - baseline_gz,
+                        "Zero-shot GZ": f"{zero_shot_gz}/{len(drafts)}",
                         "Avg Sapling": f"{avg_sp:.3f}",
                         "Δ SP": avg_sp - baseline_sp,
+                        "Zero-shot SP": f"{zero_shot_sp}/{len(drafts)}",
                         "Avg WC Δ": f"{avg_wc:+.0f}",
                         "Avg Quality": f"{avg_quality:.1f}%"
                     })
@@ -1058,15 +1406,16 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("#### GPTZero Score by Model & Mode")
-            fig, ax = plt.subplots(figsize=(8, 6))
+            st.markdown("#### AI Detection Scores by Model & Mode")
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
             
             models = sorted(by_model.keys())
             x = np.arange(len(models))
             width = 0.35
             
-            doc_scores = []
-            para_scores = []
+            # GPTZero scores
+            doc_scores_gz = []
+            para_scores_gz = []
             
             for model in models:
                 doc_drafts = by_model[model]["doc"]
@@ -1075,34 +1424,74 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 doc_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in doc_drafts]) if doc_drafts else baseline_gz
                 para_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in para_drafts]) if para_drafts else baseline_gz
                 
-                doc_scores.append(doc_score)
-                para_scores.append(para_score)
+                doc_scores_gz.append(doc_score)
+                para_scores_gz.append(para_score)
             
-            ax.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
+            ax1.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
             
             # Color bars based on performance vs baseline
-            doc_bars = ax.bar(x - width/2, doc_scores, width, label='Doc Mode', alpha=0.8)
-            para_bars = ax.bar(x + width/2, para_scores, width, label='Para Mode', alpha=0.8)
+            doc_bars = ax1.bar(x - width/2, doc_scores_gz, width, label='Doc Mode', alpha=0.8)
+            para_bars = ax1.bar(x + width/2, para_scores_gz, width, label='Para Mode', alpha=0.8)
             
-            for bar, score in zip(doc_bars, doc_scores):
+            for bar, score in zip(doc_bars, doc_scores_gz):
                 if score < baseline_gz:
                     bar.set_color('green')
                 else:
                     bar.set_color('red')
             
-            for bar, score in zip(para_bars, para_scores):
+            for bar, score in zip(para_bars, para_scores_gz):
                 if score < baseline_gz:
                     bar.set_color('green')
                 else:
                     bar.set_color('red')
             
-            ax.set_xlabel('Model')
-            ax.set_ylabel('GPTZero Score')
-            ax.set_title('Average GPTZero Scores by Model and Mode')
-            ax.set_xticks(x)
-            ax.set_xticklabels(models, rotation=45, ha='right')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            ax1.set_xlabel('Model')
+            ax1.set_ylabel('GPTZero Score')
+            ax1.set_title('Average GPTZero Scores by Model and Mode')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(models, rotation=45, ha='right')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Sapling scores
+            doc_scores_sp = []
+            para_scores_sp = []
+            
+            for model in models:
+                doc_drafts = by_model[model]["doc"]
+                para_drafts = by_model[model]["para"]
+                
+                doc_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in doc_drafts]) if doc_drafts else baseline_sp
+                para_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in para_drafts]) if para_drafts else baseline_sp
+                
+                doc_scores_sp.append(doc_score)
+                para_scores_sp.append(para_score)
+            
+            ax2.axhline(baseline_sp, color='red', linestyle='--', label='Baseline', alpha=0.7)
+            
+            # Color bars based on performance vs baseline
+            doc_bars = ax2.bar(x - width/2, doc_scores_sp, width, label='Doc Mode', alpha=0.8)
+            para_bars = ax2.bar(x + width/2, para_scores_sp, width, label='Para Mode', alpha=0.8)
+            
+            for bar, score in zip(doc_bars, doc_scores_sp):
+                if score < baseline_sp:
+                    bar.set_color('green')
+                else:
+                    bar.set_color('red')
+            
+            for bar, score in zip(para_bars, para_scores_sp):
+                if score < baseline_sp:
+                    bar.set_color('green')
+                else:
+                    bar.set_color('red')
+            
+            ax2.set_xlabel('Model')
+            ax2.set_ylabel('Sapling Score')
+            ax2.set_title('Average Sapling Scores by Model and Mode')
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(models, rotation=45, ha='right')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
             st.pyplot(fig)
@@ -1153,11 +1542,12 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         
         # Score progression over iterations
         st.markdown("#### Score Progression Across Iterations")
+        st.caption("Shows how AI detection scores vary across multiple humanization attempts")
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
         
+        # GPTZero Doc mode
         for model in sorted(by_model):
-            # Doc mode progression
             doc_drafts = sorted(by_model[model]["doc"], key=lambda x: x["iter"])
             if doc_drafts:
                 iterations = [d["iter"] + 1 for d in doc_drafts]
@@ -1165,14 +1555,15 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 ax1.plot(iterations, gz_scores, marker='o', label=model)
         
         ax1.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
+        ax1.axhline(ZERO_SHOT_THRESHOLD, color='green', linestyle=':', label='Zero-shot threshold', alpha=0.7)
         ax1.set_xlabel('Iteration')
         ax1.set_ylabel('GPTZero Score')
-        ax1.set_title('Document Mode - Score Progression')
+        ax1.set_title('Document Mode - GPTZero Score Progression')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
+        # GPTZero Para mode
         for model in sorted(by_model):
-            # Para mode progression
             para_drafts = sorted(by_model[model]["para"], key=lambda x: x["iter"])
             if para_drafts:
                 iterations = [d["iter"] + 1 for d in para_drafts]
@@ -1180,17 +1571,51 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 ax2.plot(iterations, gz_scores, marker='o', label=model)
         
         ax2.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
+        ax2.axhline(ZERO_SHOT_THRESHOLD, color='green', linestyle=':', label='Zero-shot threshold', alpha=0.7)
         ax2.set_xlabel('Iteration')
         ax2.set_ylabel('GPTZero Score')
-        ax2.set_title('Paragraph Mode - Score Progression')
+        ax2.set_title('Paragraph Mode - GPTZero Score Progression')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
+        
+        # Sapling Doc mode
+        for model in sorted(by_model):
+            doc_drafts = sorted(by_model[model]["doc"], key=lambda x: x["iter"])
+            if doc_drafts:
+                iterations = [d["iter"] + 1 for d in doc_drafts]
+                sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in doc_drafts]
+                ax3.plot(iterations, sp_scores, marker='o', label=model)
+        
+        ax3.axhline(baseline_sp, color='red', linestyle='--', label='Baseline', alpha=0.7)
+        ax3.axhline(ZERO_SHOT_THRESHOLD, color='green', linestyle=':', label='Zero-shot threshold', alpha=0.7)
+        ax3.set_xlabel('Iteration')
+        ax3.set_ylabel('Sapling Score')
+        ax3.set_title('Document Mode - Sapling Score Progression')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Sapling Para mode
+        for model in sorted(by_model):
+            para_drafts = sorted(by_model[model]["para"], key=lambda x: x["iter"])
+            if para_drafts:
+                iterations = [d["iter"] + 1 for d in para_drafts]
+                sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in para_drafts]
+                ax4.plot(iterations, sp_scores, marker='o', label=model)
+        
+        ax4.axhline(baseline_sp, color='red', linestyle='--', label='Baseline', alpha=0.7)
+        ax4.axhline(ZERO_SHOT_THRESHOLD, color='green', linestyle=':', label='Zero-shot threshold', alpha=0.7)
+        ax4.set_xlabel('Iteration')
+        ax4.set_ylabel('Sapling Score')
+        ax4.set_title('Paragraph Mode - Sapling Score Progression')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
         
         plt.tight_layout()
         st.pyplot(fig)
         
         # Quality metrics breakdown
         st.markdown("#### Quality Metrics Breakdown")
+        st.caption("Heatmap showing success rate for each quality check across models and modes")
         
         quality_breakdown = defaultdict(lambda: defaultdict(list))
         
@@ -1279,6 +1704,18 @@ def page_browser():
     # Display documents
     st.subheader(f"📄 Documents ({len(docs)} found)")
     
+    with st.expander("ℹ️ Understanding AI detection scores", expanded=False):
+        st.markdown("""
+        **AI Detection Scores (0-1 scale):**
+        - **0.0 - 0.1**: Very low AI detection (appears human-written)
+        - **0.1 - 0.3**: Low AI detection
+        - **0.3 - 0.7**: Moderate AI detection
+        - **0.7 - 0.9**: High AI detection
+        - **0.9 - 1.0**: Very high AI detection (clearly AI-generated)
+        
+        Both GPTZero and Sapling provide document and paragraph-level scores.
+        """)
+    
     for doc_path in docs:
         _display_single_doc(doc_path, compare_run if compare_run != "None" else None)
 
@@ -1309,9 +1746,17 @@ def _display_single_doc(path: Path, compare_run: str | None):
         st.markdown("### 🎯 Document-Level AI Detection")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("GPTZero Score", f"{doc['overall']['gptzero']:.3f}")
+            st.metric("GPTZero Score", f"{doc['overall']['gptzero']:.3f}",
+                     help="Overall AI detection score from GPTZero (0-1)")
         with col2:
-            st.metric("Sapling Score", f"{doc['overall']['sapling']:.3f}")
+            st.metric("Sapling Score", f"{doc['overall']['sapling']:.3f}",
+                     help="Overall AI detection score from Sapling (0-1)")
+        
+        # Zero-shot indicators
+        if doc['overall']['gptzero'] <= ZERO_SHOT_THRESHOLD:
+            st.success(f"✅ GPTZero zero-shot: Document scores below 10% threshold ({doc['overall']['gptzero']:.3f})")
+        if doc['overall']['sapling'] <= ZERO_SHOT_THRESHOLD:
+            st.success(f"✅ Sapling zero-shot: Document scores below 10% threshold ({doc['overall']['sapling']:.3f})")
         
         # Paragraph-level analysis
         st.markdown("### 📊 Paragraph-Level Analysis")
@@ -1367,22 +1812,32 @@ def _display_single_doc(path: Path, compare_run: str | None):
                         avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in doc_mode_drafts])
                         avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in doc_mode_drafts])
                         
+                        # Count zero-shot successes
+                        zs_gz = sum(1 for d in doc_mode_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                        zs_sp = sum(1 for d in doc_mode_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                        
                         st.markdown("**Document Mode Results:**")
                         colored_metric("Avg GPTZero", f"{avg_gz:.3f}", 
                                      avg_gz - doc['overall']['gptzero'])
                         colored_metric("Avg Sapling", f"{avg_sp:.3f}",
                                      avg_sp - doc['overall']['sapling'])
+                        st.metric("Zero-shot Success", f"GZ: {zs_gz}/{len(doc_mode_drafts)} | SP: {zs_sp}/{len(doc_mode_drafts)}")
                 
                 with col2:
                     if para_mode_drafts:
                         avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in para_mode_drafts])
                         avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in para_mode_drafts])
                         
+                        # Count zero-shot successes
+                        zs_gz = sum(1 for d in para_mode_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                        zs_sp = sum(1 for d in para_mode_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                        
                         st.markdown("**Paragraph Mode Results:**")
                         colored_metric("Avg GPTZero", f"{avg_gz:.3f}",
                                      avg_gz - doc['overall']['gptzero'])
                         colored_metric("Avg Sapling", f"{avg_sp:.3f}",
                                      avg_sp - doc['overall']['sapling'])
+                        st.metric("Zero-shot Success", f"GZ: {zs_gz}/{len(para_mode_drafts)} | SP: {zs_sp}/{len(para_mode_drafts)}")
             else:
                 st.info("This document was not processed in the selected run")
 
@@ -1420,9 +1875,38 @@ with st.sidebar.expander("🛠️ Troubleshooting"):
     - Try different humanizer models
     - Increase iterations
     
+    **Understanding Zero-shot Success:**
+    - Shows % of drafts achieving ≤10% AI detection
+    - Higher percentages indicate better performance
+    - Both GPTZero and Sapling tracked separately
+    
     **Label truncation in tables:**
     - Resize browser window or zoom out
     - Use fullscreen mode
+    """)
+
+# Key metrics glossary
+with st.sidebar.expander("📖 Metrics Glossary"):
+    st.markdown("""
+    **AI Detection Scores:**
+    - **GPTZero/Sapling**: 0-1 scale (lower = more human-like)
+    - **Δ (Delta)**: Change from baseline (negative = improvement)
+    
+    **Zero-shot Success:**
+    - % of drafts with ≤10% AI detection score
+    - Higher % = better humanization performance
+    
+    **Quality Metrics:**
+    - **Length OK**: Word count within acceptable range
+    - **Same Meaning**: Content meaning preserved
+    - **Same Language**: Language consistency maintained
+    - **No Missing Info**: All information retained
+    - **Citation Preserved**: Academic citations intact
+    - **Citation Content OK**: Citation text unchanged
+    
+    **Modes:**
+    - **Doc Mode**: Entire document rewritten at once
+    - **Para Mode**: Each paragraph rewritten separately
     """)
 
 st.sidebar.caption(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
