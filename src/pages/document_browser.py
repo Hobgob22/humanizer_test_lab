@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from .utils import colored_metric, ZERO_SHOT_THRESHOLD
-from results_db import list_runs, load_run
-from pipeline import load_ai_scores
+from src.pages.utils import colored_metric, ZERO_SHOT_THRESHOLD
+from src.results_db import list_runs, load_run
+from src.pipeline import load_ai_scores
 
 
 # ─────────────────── project root ────────────────────

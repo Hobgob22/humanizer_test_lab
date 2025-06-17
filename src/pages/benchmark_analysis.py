@@ -11,11 +11,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from .utils import (
+from src.pages.utils import (
     qp_get, qp_set, colored_metric, render_draft, safe_hist,
     GEMINI_FLAGS, ZERO_SHOT_THRESHOLD
 )
-from results_db import list_runs, load_run, delete_run
+
+from src.results_db import list_runs, load_run
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]

@@ -6,10 +6,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from .utils import log, show_log
-from results_db import load_run, save_run
-from pipeline import run_test
-from models import MODEL_REGISTRY
+from src.pages.utils import log, show_log
+
+from src.pipeline import run_benchmark
+from src.results_db import save_run
+from src.models import MODEL_REGISTRY
 
 
 # ─────────────────── project root ────────────────────
