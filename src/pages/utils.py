@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from ..config import ZERO_SHOT_THRESHOLD
+from src.config import ZERO_SHOT_THRESHOLD
 
 # ───────────────────────── Constants ───────────────────────
 GEMINI_FLAGS = [

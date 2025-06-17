@@ -9,6 +9,7 @@ import streamlit as st
 
 from config import OPENAI_API_KEY
 
+
 # ──────────────────────────── Authentication ─────────────────────────────
 from auth import require_login
 
