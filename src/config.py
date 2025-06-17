@@ -38,8 +38,8 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 # ────────────────────────────────────────────────────────────────
 # User-specified limits: OpenAI~50/unlimited, Gemini/Detectors ~15 rpm
 HUMANIZER_MAX_WORKERS = 50   # OpenAI (doc mode)
-GEMINI_MAX_WORKERS    = 5   # ~15 req/min
-DETECTOR_MAX_WORKERS  = 5   # ~15 req/min each
+GEMINI_MAX_WORKERS    = 50   # ~15 req/min
+DETECTOR_MAX_WORKERS  = 10   # ~15 req/min each
 
 # New: cap paragraph-level concurrency to keep threads in check
 PARA_MAX_WORKERS      = 8

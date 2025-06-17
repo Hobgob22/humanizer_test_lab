@@ -19,9 +19,9 @@ from collections import deque
 # api_name → (max_requests, window_seconds)
 # We keep one request “in hand” (14 < 15) to protect against clock drift.
 _LIMITS: dict[str, tuple[int, int]] = {
-    "gemini": (14, 60),
-    "gptzero": (14, 60),
-    "sapling": (14, 60),
+    "gemini": (1500, 60),
+    "gptzero": (50, 60),
+    "sapling": (50, 60),
 }
 
 _queues: dict[str, deque[float]] = {api: deque() for api in _LIMITS}
