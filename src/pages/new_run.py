@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.pages.utils import log, show_log
 
-from src.pipeline import run_benchmark
+from src.pipeline import run_test
 from src.results_db import save_run
 from src.models import MODEL_REGISTRY
 
