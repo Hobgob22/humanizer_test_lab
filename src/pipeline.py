@@ -122,15 +122,18 @@ def _split_sentences(text: str) -> List[str]:
     parts = [t.strip() for t in _SENT_RE.split(text.strip()) if t.strip()]
     return parts or [text.strip()]
 
-def _detect_gptzero(text: str, paragraphs: List[str], log=None):
-    # try cache first
-    cached = gptzero.get("gptzero", text)
-    if cached is not None:
-        _maybe_log("GPTZero: ✨ cache hit — scores retrieved", log)
-        raw = cached
+def _detect_gptzero(text: str, paragraphs: List[str], *, skip_cache: bool, log=None):
+    if not skip_cache:
+        cached = gptzero.get("gptzero", text)
+        if cached is not None:
+            _maybe_log("GPTZero: ✨ cache hit — scores retrieved", log)
+            raw = cached
+        else:
+            _maybe_log("GPTZero: 🔄 cache miss — computing scores", log)
+            raw = gptzero.detect_ai(text)
     else:
         _maybe_log("GPTZero: 🔄 cache miss — computing scores", log)
-        raw = gptzero.detect_ai(text)
+        raw = gptzero.detect_ai(text, skip_cache=True)
 
     doc_score = raw["documents"][0]["completely_generated_prob"]
     para_raw  = raw["documents"][0].get("paragraphs") or []
@@ -143,15 +146,18 @@ def _detect_gptzero(text: str, paragraphs: List[str], log=None):
     return doc_score, para_scores
 
 
-def _detect_sapling(text: str, paragraphs: List[str], log=None):
-    # try cache first
-    cached = sapling.get("sapling", text)
-    if cached is not None:
-        _maybe_log("Sapling: ✨ cache hit — scores retrieved", log)
-        raw = cached
+def _detect_sapling(text: str, paragraphs: List[str], *, skip_cache: bool, log=None):
+    if not skip_cache:
+        cached = sapling.get("sapling", text)
+        if cached is not None:
+            _maybe_log("Sapling: ✨ cache hit — scores retrieved", log)
+            raw = cached
+        else:
+            _maybe_log("Sapling: 🔄 cache miss — computing scores", log)
+            raw = sapling.detect_ai(text)
     else:
         _maybe_log("Sapling: 🔄 cache miss — computing scores", log)
-        raw = sapling.detect_ai(text)
+        raw = sapling.detect_ai(text, skip_cache=True)
 
     doc_score   = raw["score"]
     sent_scores = [s["score"] for s in raw.get("sentence_scores", [])]
@@ -169,11 +175,11 @@ def _detect_sapling(text: str, paragraphs: List[str], log=None):
     return doc_score, para_scores
 
 
-def _detect_both(text: str, paras: List[str], log=None):
+def _detect_both(text: str, paras: List[str], *, skip_cache: bool, log=None):
     """Run both detectors concurrently."""
     with _fast_pool(max_workers=2) as pool:
-        fut_gz = pool.submit(_detect_gptzero, text, paras, log)
-        fut_sp = pool.submit(_detect_sapling, text, paras, log)
+        fut_gz = pool.submit(_detect_gptzero, text, paras, skip_cache=skip_cache, log=log)
+        fut_sp = pool.submit(_detect_sapling, text, paras, skip_cache=skip_cache, log=log)
         gz_doc, gz_par = fut_gz.result()
         sp_doc, sp_par = fut_sp.result()
     return {"g_doc": gz_doc, "s_doc": sp_doc,
@@ -181,40 +187,36 @@ def _detect_both(text: str, paras: List[str], log=None):
 
 # ═══════════════ 4 · Concurrent detector scoring ═══════════════════════
 def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=None):
-    """Score all unique texts concurrently with both detectors."""
     uniq = {_hash(t): (t, p) for t, p in texts_paras}
+    baseline_hash = _hash(texts_paras[0][0])  # first entry == original document
 
-    doc_scores_gz: Dict[str, float] = {}
-    doc_scores_sp: Dict[str, float] = {}
-    para_scores_gz: Dict[str, float] = {}
-    para_scores_sp: Dict[str, float] = {}
+    doc_scores_gz, doc_scores_sp = {}, {}
+    para_scores_gz, para_scores_sp = {}, {}
 
     _stage(f"Detector scoring phase • {len(uniq)} unique texts", log)
-    _maybe_log(f"Using GPTZero and Sapling detectors in parallel", log)
 
     with _fast_pool(max_workers=DETECTOR_MAX_WORKERS) as pool:
-        fut2h = {
-            pool.submit(_detect_both, t, p, log): h
-            for h, (t, p) in uniq.items()
-        }
-        completed = 0
-        try:
-            for fut in as_completed(fut2h):
-                completed += 1
-                h = fut2h[fut]
-                t, p = uniq[h]
-                res = fut.result()
-                doc_scores_gz[h] = res["g_doc"]
-                doc_scores_sp[h] = res["s_doc"]
-                para_scores_gz.update({_hash(pt): s for pt, s in zip(p, res["g_par"])})
-                para_scores_sp.update({_hash(pt): s for pt, s in zip(p, res["s_par"])})
-                _maybe_log(f"Detector progress: {completed}/{len(uniq)} texts scored", log)
-        except KeyboardInterrupt:
-            pool.shutdown(wait=False, cancel_futures=True)
-            raise
+        fut2h = {}
+        for h, (t, p) in uniq.items():
+            skip_cache = h != baseline_hash  # only originals may touch cache
+            fut = pool.submit(_detect_both, t, p, skip_cache=skip_cache, log=log)
+            fut2h[fut] = h
 
-    _stage(f"✓ Detector scoring complete • scored {completed} texts", log)
+        completed = 0
+        for fut in as_completed(fut2h):
+            completed += 1
+            h = fut2h[fut]
+            t, p = uniq[h]
+            res = fut.result()
+            doc_scores_gz[h] = res["g_doc"]
+            doc_scores_sp[h] = res["s_doc"]
+            para_scores_gz.update({_hash(pt): s for pt, s in zip(p, res["g_par"])})
+            para_scores_sp.update({_hash(pt): s for pt, s in zip(p, res["s_par"])})
+            _maybe_log(f"Detector progress: {completed}/{len(uniq)}", log)
+
+    _stage("✓ Detector scoring complete", log)
     return doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp
+
 
 # ═══════════════ 5 · Gemini quality helper ════════════════════════════
 def _batch_quality_check(pairs: List[Tuple[str, str]], log=None):
@@ -585,7 +587,7 @@ def _pack_run(model: str, mode: str, it: int,
     }
 
 # ═══════════════ 12 · Sequential loader ════════════════════════════
-def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None, max_retries: int = 3):
+def load_ai_scores(doc_path: Path, log: Callable[[str], None] | None = None, max_retries: int = 3):
     """Load AI scores for a single document (used by browser) with retry logic."""
     para_objs = extract_paragraphs_with_type(doc_path)
     segs = [p["text"] for p in para_objs]
@@ -598,10 +600,11 @@ def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None, max_retr
             if attempt > 1:
                 _maybe_log(f"🔄 Retrying detector scoring (attempt {attempt}/{max_retries})", log)
                 time.sleep(min(30 * (attempt - 1), 120))
-                
-            scores = _detect_both(full_text, segs, log)
+
+            # ----- fixed: pass log as keyword so signature matches -----
+            scores = _detect_both(full_text, segs, skip_cache=False, log=log)
             break
-            
+
         except Exception as exc:
             _maybe_log(f"❌ Detector error (attempt {attempt}): {exc}", log)
             if attempt == max_retries:
@@ -613,8 +616,7 @@ def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None, max_retr
     para_scores_sp = {_hash(p): s for p, s in zip(segs, scores["s_par"])}
 
     assembled = _assemble_scores_from_batch(
-        full_text, segs, doc_scores_gz, doc_scores_sp,
-        para_scores_gz, para_scores_sp
+        full_text, segs, doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp
     )
 
     return {
@@ -622,5 +624,5 @@ def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None, max_retr
         "segments": segs,
         "overall": assembled["group_doc"],
         "group_par": assembled["group_par"],
-        "ind_par": assembled["ind_par"]
+        "ind_par": assembled["ind_par"],
     }

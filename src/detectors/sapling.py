@@ -1,10 +1,10 @@
 """
 Sapling detector wrapper
-------------------------
-• Adds 3-attempt retry with exponential back-off (2 s ▸ 4 s ▸ 8 s).
-• Respects global rate limits before each attempt.
-• Caches successful responses with the @cached decorator.
-• Provides a cheap `get()` helper for cache-only look-ups.
+
+Changes (2025-06-17)
+--------------------
+* Accepts a **`skip_cache`** keyword so the caller can bypass the cache.
+  The decorator handles the flag; the body ignores it.
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ _START_DELAY = 2  # seconds
 
 
 @cached("sapling")
-def detect_ai(text: str) -> dict:
+def detect_ai(text: str, *, skip_cache: bool = False) -> dict:  # new kwarg
     """
     Call Sapling’s /aidetect endpoint with automatic retries.
 
-    If the request still fails after `_MAX_RETRIES`, the raised
-    `HTTPError` is propagated so upstream code can handle it.
+    ``skip_cache`` is consumed by the decorator; it’s present only
+    to keep the signature compatible with pipeline calls.
     """
     url = "https://api.sapling.ai/api/v1/aidetect"
     payload = {"key": SAPLING_API_KEY, "text": text}
@@ -37,30 +37,12 @@ def detect_ai(text: str) -> dict:
             resp = requests.post(url, json=payload, timeout=60)
             resp.raise_for_status()
             return resp.json()
-        except requests.HTTPError as exc:
+        except requests.HTTPError:
             if attempt == _MAX_RETRIES:
-                raise  # bubble up on final failure
-            delay = _START_DELAY * (2 ** (attempt - 1))
-            time.sleep(delay)
+                raise
+            time.sleep(_START_DELAY * (2 ** (attempt - 1)))
 
 
-# -------------------------------------------------------------------------
-# Public helper: *cache-only* accessor (no external call)
-# -------------------------------------------------------------------------
+# ----- Public helper: cache-only accessor (unchanged) -----------------
 def get(detector: str, text: str):
-    """
-    Fetch the cached Sapling response for *text*.
-
-    Parameters
-    ----------
-    detector : str
-        Should be the literal string ``"sapling"`` – mirrors `gptzero.get()`.
-    text : str
-        The original text whose cached score is requested.
-
-    Returns
-    -------
-    dict | None
-        Cached JSON blob if available, otherwise ``None``.
-    """
     return _cache_get(detector, text)
