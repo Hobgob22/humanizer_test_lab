@@ -91,10 +91,11 @@ def _stage(message: str, cb: Callable[[str], None] | None = None):
 _GEMINI_POOL = ThreadPoolExecutor(max_workers=GEMINI_MAX_WORKERS)
 
 # ═══════════════ 2 · Timeout helper (interrupt-aware) ════════════════
-def _call_with_timeout(fn, *args, timeout: int = 180, **kwargs):
+def _call_with_timeout(fn, *args, timeout: int = 300, **kwargs):
     """
     Run *fn* in a worker thread and raise RuntimeError if it takes
     longer than *timeout* seconds. Polls every second for interrupts.
+    Default timeout increased to 300s (5 minutes) for robustness.
     """
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wdog") as pool:
         fut = pool.submit(fn, *args, **kwargs)
@@ -104,9 +105,13 @@ def _call_with_timeout(fn, *args, timeout: int = 180, **kwargs):
                 done, _ = wait([fut], timeout=1, return_when=FIRST_COMPLETED)
                 if fut in done:
                     return fut.result()
-                if time.time() - start >= timeout:
+                elapsed = time.time() - start
+                if elapsed >= timeout:
                     fut.cancel()
                     raise RuntimeError(f"Operation timed-out after {timeout}s")
+                # Log progress for long-running operations
+                if elapsed > 60 and int(elapsed) % 30 == 0:
+                    _maybe_log(f"⏳ Still running... {elapsed:.0f}s elapsed", kwargs.get('log'))
         except KeyboardInterrupt:
             fut.cancel()
             raise
@@ -116,17 +121,6 @@ _SENT_RE = re.compile(r"(?<=[.!?])\s+")
 def _split_sentences(text: str) -> List[str]:
     parts = [t.strip() for t in _SENT_RE.split(text.strip()) if t.strip()]
     return parts or [text.strip()]
-
-def _detect_gptzero(text: str, paragraphs: List[str], log=None):
-    raw = gptzero.get("gptzero", text) or gptzero.detect_ai(text)
-    doc_score = raw["documents"][0]["completely_generated_prob"]
-    para_raw  = raw["documents"][0].get("paragraphs") or []
-    if len(para_raw) == len(paragraphs):
-        para_scores = [p["completely_generated_prob"] for p in para_raw]
-    else:
-        para_scores = [doc_score] * len(paragraphs)
-    _maybe_log(f"GPTZero: doc_score={doc_score}", log)
-    return doc_score, para_scores
 
 def _detect_gptzero(text: str, paragraphs: List[str], log=None):
     # try cache first
@@ -173,7 +167,6 @@ def _detect_sapling(text: str, paragraphs: List[str], log=None):
 
     _maybe_log(f"Sapling: doc_score={doc_score}", log)
     return doc_score, para_scores
-
 
 
 def _detect_both(text: str, paras: List[str], log=None):
@@ -255,7 +248,7 @@ def _batch_quality_check(pairs: List[Tuple[str, str]], log=None):
 def _humanize_doc(text: str, model: str, log=None) -> str:
     _stage(f"Doc humanization START • {model}", log)
     start_time = time.time()
-    out = _call_with_timeout(humanize, text, model, "doc", timeout=180)
+    out = _call_with_timeout(humanize, text, model, "doc", timeout=300, log=log)
     elapsed = time.time() - start_time
     _stage(f"Doc humanization DONE • {model} • {elapsed:.1f}s", log)
     return out
@@ -417,7 +410,8 @@ def _assemble_per_para_stats(
 # ═══════════════ 10 · Main runner ════════════════════════════════
 def run_test(doc_path: Path, models: List[str]|None=None,
              logger: Callable[[str],None]|None=None,
-             iterations: int = REHUMANIZE_N):
+             iterations: int = REHUMANIZE_N,
+             max_retries: int = 3):
     _stage("[Pipeline] run_test START", logger)
     _maybe_log("="*60, logger)
     _maybe_log(f"Processing document: {doc_path.name}", logger)
@@ -430,11 +424,11 @@ def run_test(doc_path: Path, models: List[str]|None=None,
         _maybe_log(f"Extracted {len(para_objs)} paragraphs", logger)
     except Exception as exc:
         _maybe_log(f"❌ paragraph extraction error: {exc}", logger)
-        return {"document": doc_path.name, "runs": [], "paragraph_count": 0}
+        return {"document": doc_path.name, "runs": [], "paragraph_count": 0, "error": str(exc)}
 
     if not para_objs:
         _maybe_log("– SKIP (no paragraphs)", logger)
-        return {"document": doc_path.name, "runs": [], "paragraph_count": 0}
+        return {"document": doc_path.name, "runs": [], "paragraph_count": 0, "empty": True}
 
     orig_paras = [p["text"] for p in para_objs]
     orig_full  = "\n\n".join(orig_paras)
@@ -442,43 +436,79 @@ def run_test(doc_path: Path, models: List[str]|None=None,
     models     = models or DEFAULT_HUMANIZER_MODELS
 
 
-    # Phase 1: Generation
+    # Phase 1: Generation (with retries)
     _stage("Phase 1: Generation", logger)
-    try:
-        drafts = _generate_all_drafts(models, iterations, orig_full, para_objs, logger)
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:
-        _maybe_log(f"❌ Phase 1 error: {exc}", logger)
-        return {"document": doc_path.name, "runs": [], "paragraph_count": len(orig_paras)}
+    drafts = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                _maybe_log(f"🔄 Retrying Phase 1 (attempt {attempt}/{max_retries})", logger)
+                time.sleep(min(30 * (attempt - 1), 120))  # exponential backoff: 30s, 60s, 120s
+            
+            drafts = _generate_all_drafts(models, iterations, orig_full, para_objs, logger)
+            break  # Success, exit retry loop
+            
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            _maybe_log(f"❌ Phase 1 error (attempt {attempt}): {exc}", logger)
+            if attempt == max_retries:
+                _maybe_log(f"❌ Phase 1 failed after {max_retries} attempts", logger)
+                return {"document": doc_path.name, "runs": [], "paragraph_count": len(orig_paras), 
+                        "error": f"Phase 1 failed: {exc}", "phase_failed": 1}
 
-    # Phase 2: Detector scoring
+    # Phase 2: Detector scoring (with retries)
     _stage("Phase 2: Detector scoring", logger)
     texts_paras = [(orig_full, orig_paras)] + [
         (d["humanized_text"], d["humanized_paras_resolved"]) for d in drafts
     ]
-    try:
-        doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp = \
-            _score_all_texts_concurrently(texts_paras, logger)
-    except KeyboardInterrupt:
-        raise
-    except Exception as exc:
-        _maybe_log(f"❌ Phase 2 error: {exc}", logger)
-        return {"document": doc_path.name, "runs": drafts, "paragraph_count": len(orig_paras)}
+    
+    doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp = None, None, None, None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                _maybe_log(f"🔄 Retrying Phase 2 (attempt {attempt}/{max_retries})", logger)
+                time.sleep(min(30 * (attempt - 1), 120))
+                
+            doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp = \
+                _score_all_texts_concurrently(texts_paras, logger)
+            break
+            
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            _maybe_log(f"❌ Phase 2 error (attempt {attempt}): {exc}", logger)
+            if attempt == max_retries:
+                _maybe_log(f"❌ Phase 2 failed after {max_retries} attempts - continuing with partial results", logger)
+                # Continue with drafts but no detector scores
+                return {"document": doc_path.name, "runs": drafts, "paragraph_count": len(orig_paras),
+                        "warning": f"Phase 2 failed: {exc}", "phase_failed": 2}
 
-    # Phase 3: Gemini quality checks
+    # Phase 3: Gemini quality checks (with retries)
     _stage("Phase 3: Gemini quality evaluation", logger)
     q_pairs = {
         (o, h) for d in drafts
         if len(orig_paras) == len(d["humanized_paras_resolved"])
         for o, h in zip(orig_paras, d["humanized_paras_resolved"])
     }
-    try:
-        q_results = _batch_quality_check(list(q_pairs), logger)
-    except KeyboardInterrupt:
-        raise
-    except Exception:
-        q_results = {}
+    
+    q_results = {}
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                _maybe_log(f"🔄 Retrying Phase 3 (attempt {attempt}/{max_retries})", logger)
+                time.sleep(min(30 * (attempt - 1), 120))
+                
+            q_results = _batch_quality_check(list(q_pairs), logger)
+            break
+            
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            _maybe_log(f"❌ Phase 3 error (attempt {attempt}): {exc}", logger)
+            if attempt == max_retries:
+                _maybe_log(f"⚠️ Phase 3 failed after {max_retries} attempts - continuing without quality checks", logger)
+                q_results = {}  # Continue with empty quality results
 
     # Phase 4: Assembly
     _stage("Phase 4: Assembly", logger)
@@ -555,14 +585,27 @@ def _pack_run(model: str, mode: str, it: int,
     }
 
 # ═══════════════ 12 · Sequential loader ════════════════════════════
-def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None):
-    """Load AI scores for a single document (used by browser)."""
+def load_ai_scores(doc_path: Path, log: Callable[[str],None]|None=None, max_retries: int = 3):
+    """Load AI scores for a single document (used by browser) with retry logic."""
     para_objs = extract_paragraphs_with_type(doc_path)
     segs = [p["text"] for p in para_objs]
     full_text = "\n\n".join(segs)
     _maybe_log(f"Detector scores for {doc_path.name}", log)
 
-    scores = _detect_both(full_text, segs, log)
+    scores = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                _maybe_log(f"🔄 Retrying detector scoring (attempt {attempt}/{max_retries})", log)
+                time.sleep(min(30 * (attempt - 1), 120))
+                
+            scores = _detect_both(full_text, segs, log)
+            break
+            
+        except Exception as exc:
+            _maybe_log(f"❌ Detector error (attempt {attempt}): {exc}", log)
+            if attempt == max_retries:
+                raise Exception(f"Failed to get detector scores after {max_retries} attempts: {exc}")
 
     doc_scores_gz = {_hash(full_text): scores["g_doc"]}
     doc_scores_sp = {_hash(full_text): scores["s_doc"]}

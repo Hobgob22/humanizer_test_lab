@@ -1,3 +1,4 @@
+# src/humanizers/humanizer.py
 """
 Provider-agnostic humanizer wrapper.
 
@@ -112,10 +113,18 @@ def humanize(
     text: str,
     display_name: str,
     mode: Literal["doc", "para"] = "para",
+    **kwargs: Any,
 ) -> str:
     """
     Rewrite *text* using the model identified by *display_name*.
+
+    Extra keyword arguments are accepted and ignored so that
+    upstream callers can pass contextual data (e.g. `log=…`)
+    without breaking the interface.
     """
+    # Silently discard unrecognised kwargs (e.g. log callbacks)
+    kwargs.pop("log", None)
+
     meta = MODEL_REGISTRY[display_name]
     provider = meta["provider"]
     model_id = meta["model"]

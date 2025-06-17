@@ -13,8 +13,9 @@ import streamlit as st
 
 from src.pages.utils import (
     qp_get, qp_set, colored_metric, render_draft, safe_hist,
-    GEMINI_FLAGS, ZERO_SHOT_THRESHOLD
+    GEMINI_FLAGS
 )
+from src.config import ZERO_SHOT_THRESHOLD
 
 from src.results_db import list_runs, load_run, delete_run
 
@@ -41,32 +42,48 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
     folder_baselines: DefaultDict[str, List[Dict]] = defaultdict(list)
     for doc in docs:
         folder = doc.get("folder", "unknown")
-        if doc.get("runs"):
-            first_run = doc["runs"][0]
-            folder_baselines[folder].append({
-                "gptzero": first_run["scores_before"]["group_doc"]["gptzero"],
-                "sapling": first_run["scores_before"]["group_doc"]["sapling"],
-                "wordcount": first_run["wordcount_before"]
-            })
+        runs = doc.get("runs", [])
+        if runs and len(runs) > 0:
+            # Check if the first run has the expected structure
+            first_run = runs[0]
+            if "scores_before" in first_run and "group_doc" in first_run["scores_before"]:
+                folder_baselines[folder].append({
+                    "gptzero": first_run["scores_before"]["group_doc"]["gptzero"],
+                    "sapling": first_run["scores_before"]["group_doc"]["sapling"],
+                    "wordcount": first_run.get("wordcount_before", 0)
+                })
     
     # Calculate average baselines per folder
     folder_avg_baselines = {}
     for folder, baselines in folder_baselines.items():
-        folder_avg_baselines[folder] = {
-            "gptzero": np.mean([b["gptzero"] for b in baselines]),
-            "sapling": np.mean([b["sapling"] for b in baselines]),
-            "wordcount": np.mean([b["wordcount"] for b in baselines])
-        }
+        if baselines:  # Only calculate if we have data
+            folder_avg_baselines[folder] = {
+                "gptzero": np.mean([b["gptzero"] for b in baselines]),
+                "sapling": np.mean([b["sapling"] for b in baselines]),
+                "wordcount": np.mean([b["wordcount"] for b in baselines])
+            }
+        else:
+            # Default values if no baseline data
+            folder_avg_baselines[folder] = {
+                "gptzero": 0.5,  # Default middle value
+                "sapling": 0.5,
+                "wordcount": 0
+            }
     
     # Collect data
     for doc in docs:
         folder = doc.get("folder", "unknown")
-        if not doc.get("runs"):
+        runs = doc.get("runs", [])
+        if not runs:
             continue
         
-        for draft in doc["runs"]:
-            model = draft["model"]
-            mode = draft["mode"]
+        for draft in runs:
+            # Skip drafts that don't have required data
+            if "scores_after" not in draft or "group_doc" not in draft["scores_after"]:
+                continue
+                
+            model = draft.get("model", "unknown")
+            mode = draft.get("mode", "unknown")
             
             # Initialize lists if not exists
             if "scores" not in stats[folder][model][mode]:
@@ -83,13 +100,13 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
             s = stats[folder][model][mode]
             
             # Add after scores
-            gz_after = draft["scores_after"]["group_doc"]["gptzero"]
-            sp_after = draft["scores_after"]["group_doc"]["sapling"]
+            gz_after = draft["scores_after"]["group_doc"].get("gptzero", 0)
+            sp_after = draft["scores_after"]["group_doc"].get("sapling", 0)
             
             s["after_scores"].append({
                 "gptzero": gz_after,
                 "sapling": sp_after,
-                "wordcount": draft["wordcount_after"]
+                "wordcount": draft.get("wordcount_after", 0)
             })
             
             # Count zero-shot successes
@@ -99,28 +116,33 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 s["zero_shot_sp"] += 1
             
             # Word count delta
-            s["wc_deltas"].append(draft["wordcount_after"] - draft["wordcount_before"])
+            wc_before = draft.get("wordcount_before", 0)
+            wc_after = draft.get("wordcount_after", 0)
+            s["wc_deltas"].append(wc_after - wc_before)
             
             # Quality flags
-            if not draft["para_mismatch"]:
+            if not draft.get("para_mismatch", False):
                 for flag in GEMINI_FLAGS:
                     count = draft.get("flag_counts", {}).get(flag, 0)
                     total = draft.get("para_count_before", 1)
                     s["quality_flags"][flag].append((count / total) * 100 if total > 0 else 0)
             
             s["draft_count"] += 1
-            if draft["para_mismatch"]:
+            if draft.get("para_mismatch", False):
                 s["mismatch_count"] += 1
     
     # Calculate aggregated statistics
     result = {}
     for folder, models in stats.items():
         result[folder] = {}
-        folder_baseline = folder_avg_baselines.get(folder, {"gptzero": 0, "sapling": 0})
+        folder_baseline = folder_avg_baselines.get(folder, {"gptzero": 0.5, "sapling": 0.5})
         
         for model, modes in models.items():
             result[folder][model] = {}
             for mode, data in modes.items():
+                if not data["after_scores"]:
+                    continue
+                    
                 # Calculate averages
                 after_gz = np.mean([a["gptzero"] for a in data["after_scores"]])
                 after_sp = np.mean([a["sapling"] for a in data["after_scores"]])
@@ -224,22 +246,32 @@ def page_runs():
     # Overview page
     st.header(f"📊 Benchmark Analysis: **{run_id}**")
     
+    # Count successful vs failed documents
+    successful_docs = sum(1 for d in docs if d.get("runs"))
+    failed_docs = sum(1 for d in docs if not d.get("runs"))
+    total_drafts = sum(len(d.get("runs", [])) for d in docs)
+    
     # Top-level metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("📄 Documents", len(docs), help="Total number of documents processed in this benchmark")
     with col2:
-        st.metric("📝 Total drafts", sum(len(d.get("runs", [])) for d in docs), 
-                  help="Total humanized drafts generated (documents × models × iterations × 2 modes)")
+        st.metric("✅ Successful", successful_docs, help="Documents successfully processed")
     with col3:
-        st.metric("🔄 Iterations", run.get("iterations", "N/A"),
-                  help="Number of times each document was humanized with each model")
+        st.metric("❌ Failed", failed_docs, help="Documents that failed processing")
     with col4:
+        st.metric("📝 Total drafts", total_drafts, 
+                  help="Total humanized drafts generated (documents × models × iterations × 2 modes)")
+    with col5:
         models_used = set()
         for doc in docs:
             for draft in doc.get("runs", []):
-                models_used.add(draft["model"])
+                models_used.add(draft.get("model", "unknown"))
         st.metric("🤖 Models", len(models_used), help="Number of different humanizer models tested")
+
+    # Show warnings if there were failures
+    if failed_docs > 0:
+        st.warning(f"⚠️ {failed_docs} documents failed processing. They are excluded from statistics but listed in the Documents tab.")
 
     # Calculate detailed statistics
     detailed_stats = _aggregate_statistics_by_model_mode_folder(docs)
@@ -741,18 +773,24 @@ def page_runs():
         folder_baselines = defaultdict(lambda: {"gz": [], "sp": []})
         for doc in docs:
             folder = doc.get("folder", "unknown")
-            if doc.get("runs"):
+            runs = doc.get("runs", [])
+            if runs and len(runs) > 0:
                 # Get baseline from first run (all runs have same baseline)
-                baseline_gz = doc["runs"][0]["scores_before"]["group_doc"]["gptzero"]
-                baseline_sp = doc["runs"][0]["scores_before"]["group_doc"]["sapling"]
-                folder_baselines[folder]["gz"].append(baseline_gz)
-                folder_baselines[folder]["sp"].append(baseline_sp)
+                first_run = runs[0]
+                if "scores_before" in first_run and "group_doc" in first_run["scores_before"]:
+                    baseline_gz = first_run["scores_before"]["group_doc"]["gptzero"]
+                    baseline_sp = first_run["scores_before"]["group_doc"]["sapling"]
+                    folder_baselines[folder]["gz"].append(baseline_gz)
+                    folder_baselines[folder]["sp"].append(baseline_sp)
                 
-                for draft in doc.get("runs", []):
-                    gz_score = draft["scores_after"]["group_doc"]["gptzero"]
-                    sp_score = draft["scores_after"]["group_doc"]["sapling"]
-                    by_model_mode_folder[folder][draft["model"]][draft["mode"]]["gz"].append(gz_score)
-                    by_model_mode_folder[folder][draft["model"]][draft["mode"]]["sp"].append(sp_score)
+                for draft in runs:
+                    if "scores_after" in draft and "group_doc" in draft["scores_after"]:
+                        gz_score = draft["scores_after"]["group_doc"].get("gptzero", 0)
+                        sp_score = draft["scores_after"]["group_doc"].get("sapling", 0)
+                        model = draft.get("model", "unknown")
+                        mode = draft.get("mode", "unknown")
+                        by_model_mode_folder[folder][model][mode]["gz"].append(gz_score)
+                        by_model_mode_folder[folder][model][mode]["sp"].append(sp_score)
 
         # Create distribution plots by folder
         for folder in ["ai_texts", "human_texts", "mixed_texts"]:
@@ -764,7 +802,7 @@ def page_runs():
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
                 
                 # Get average baseline for this folder
-                if folder in folder_baselines:
+                if folder in folder_baselines and folder_baselines[folder]["gz"]:
                     avg_baseline_gz = np.mean(folder_baselines[folder]["gz"])
                     ax1.axvline(avg_baseline_gz, color="red", linestyle="--", 
                                label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
@@ -801,7 +839,7 @@ def page_runs():
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
                 
                 # Get average baseline for this folder
-                if folder in folder_baselines:
+                if folder in folder_baselines and folder_baselines[folder]["sp"]:
                     avg_baseline_sp = np.mean(folder_baselines[folder]["sp"])
                     ax1.axvline(avg_baseline_sp, color="red", linestyle="--", 
                                label=f"Baseline (avg: {avg_baseline_sp:.3f})", alpha=0.7)
@@ -844,25 +882,43 @@ def page_runs():
             - Paragraph-by-paragraph analysis
             - Quality check results
             - Score comparisons
+            
+            Documents marked with ❌ failed processing and have no results.
             """)
         
-        # Group documents by folder
-        groups: DefaultDict[str, List[str]] = defaultdict(list)
+        # Group documents by folder and status
+        groups: DefaultDict[str, List[Dict]] = defaultdict(list)
         for d in docs:
-            groups[d.get("folder", "(unknown)")].append(d["document"])
+            groups[d.get("folder", "(unknown)")].append(d)
         
         for folder in ["ai_texts", "human_texts", "mixed_texts"]:
             if folder in groups:
-                with st.expander(f"📁 {folder.replace('_', ' ').title()} ({len(groups[folder])} documents)", 
+                folder_docs = groups[folder]
+                successful = sum(1 for d in folder_docs if d.get("runs"))
+                failed = len(folder_docs) - successful
+                
+                with st.expander(f"📁 {folder.replace('_', ' ').title()} ({successful} ✅, {failed} ❌)", 
                                expanded=(folder == "ai_texts")):
-                    for i, fn in enumerate(sorted(groups[folder])):
-                        col1, col2 = st.columns([3, 1])
+                    for i, doc in enumerate(sorted(folder_docs, key=lambda x: x["document"])):
+                        col1, col2, col3 = st.columns([1, 3, 1])
                         with col1:
-                            st.text(fn)
+                            if doc.get("runs"):
+                                st.success("✅")
+                            else:
+                                st.error("❌")
                         with col2:
-                            if st.button("View", key=f"view_{folder}_{i}"):
-                                qp_set(run=run_id, view="doc", doc=fn)
-                                st.rerun()
+                            st.text(doc["document"])
+                            if doc.get("error"):
+                                st.caption(f"Error: {doc['error']}")
+                            elif doc.get("warning"):
+                                st.caption(f"Warning: {doc['warning']}")
+                        with col3:
+                            if doc.get("runs"):
+                                if st.button("View", key=f"view_{folder}_{i}"):
+                                    qp_set(run=run_id, view="doc", doc=doc["document"])
+                                    st.rerun()
+                            else:
+                                st.button("View", key=f"view_{folder}_{i}", disabled=True)
 
     # Run management
     st.divider()
@@ -892,11 +948,20 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
             qp_set(view=None, doc=None)
             st.rerun()
 
+    # Check if document has results
+    if not doc.get("runs"):
+        st.error("This document failed processing and has no results.")
+        if doc.get("error"):
+            st.error(f"Error: {doc['error']}")
+        if doc.get("warning"):
+            st.warning(f"Warning: {doc['warning']}")
+        return
+
     # Document metadata
     para_total = doc["paragraph_count"]
-    baseline_wc = next((r['wordcount_before'] for r in doc['runs'] if r['mode']=='doc'), '—')
-    baseline_gz = next((r['scores_before']['group_doc']['gptzero'] for r in doc['runs']), 0)
-    baseline_sp = next((r['scores_before']['group_doc']['sapling'] for r in doc['runs']), 0)
+    baseline_wc = next((r.get('wordcount_before', 0) for r in doc['runs'] if r.get('mode')=='doc'), 0)
+    baseline_gz = next((r['scores_before']['group_doc']['gptzero'] for r in doc['runs'] if 'scores_before' in r), 0)
+    baseline_sp = next((r['scores_before']['group_doc']['sapling'] for r in doc['runs'] if 'scores_before' in r), 0)
     
     # Metadata cards
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -914,7 +979,9 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
     # Organize drafts by model and mode
     by_model: DefaultDict[str, Dict[str, List[Dict]]] = defaultdict(lambda: {"doc": [], "para": []})
     for dr in doc["runs"]:
-        by_model[dr["model"]][dr["mode"]].append(dr)
+        model = dr.get("model", "unknown")
+        mode = dr.get("mode", "unknown")
+        by_model[model][mode].append(dr)
 
     # Create tabs for different views
     tab1, tab2, tab3, tab4 = st.tabs(["📄 Document Mode", "📝 Paragraph Mode", "📊 Comparison", "📈 Analysis"])
@@ -929,24 +996,27 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 
                 # Summary stats for this model with colored metrics
                 model_drafts = by_model[model]["doc"]
-                avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in model_drafts])
-                avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in model_drafts])
-                avg_wc_delta = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in model_drafts])
-                zero_shot_gz = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
-                zero_shot_sp = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                valid_drafts = [d for d in model_drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
-                with col2:
-                    colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
-                with col3:
-                    st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
-                with col4:
-                    st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(model_drafts)} SP:{zero_shot_sp}/{len(model_drafts)}")
+                if valid_drafts:
+                    avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
+                    avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
+                    avg_wc_delta = np.mean([d.get("wordcount_after", 0) - d.get("wordcount_before", 0) for d in valid_drafts])
+                    zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                    zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                    with col2:
+                        colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                    with col3:
+                        st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
+                    with col4:
+                        st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(valid_drafts)} SP:{zero_shot_sp}/{len(valid_drafts)}")
                 
                 # Individual drafts
-                for dr in sorted(model_drafts, key=lambda x: x["iter"]):
+                for dr in sorted(model_drafts, key=lambda x: x.get("iter", 0)):
                     render_draft(dr, para_total, doc_name, model)
                 
                 st.divider()
@@ -961,24 +1031,27 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 
                 # Summary stats for this model with colored metrics
                 model_drafts = by_model[model]["para"]
-                avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in model_drafts])
-                avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in model_drafts])
-                avg_wc_delta = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in model_drafts])
-                zero_shot_gz = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
-                zero_shot_sp = sum(1 for d in model_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                valid_drafts = [d for d in model_drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
-                with col2:
-                    colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
-                with col3:
-                    st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
-                with col4:
-                    st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(model_drafts)} SP:{zero_shot_sp}/{len(model_drafts)}")
+                if valid_drafts:
+                    avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
+                    avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
+                    avg_wc_delta = np.mean([d.get("wordcount_after", 0) - d.get("wordcount_before", 0) for d in valid_drafts])
+                    zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                    zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                    with col2:
+                        colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                    with col3:
+                        st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
+                    with col4:
+                        st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(valid_drafts)} SP:{zero_shot_sp}/{len(valid_drafts)}")
                 
                 # Individual drafts
-                for dr in sorted(model_drafts, key=lambda x: x["iter"]):
+                for dr in sorted(model_drafts, key=lambda x: x.get("iter", 0)):
                     render_draft(dr, para_total, doc_name, model)
                 
                 st.divider()
@@ -999,19 +1072,21 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         for model in sorted(by_model):
             for mode in ["doc", "para"]:
                 drafts = by_model[model][mode]
-                if drafts:
-                    avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in drafts])
-                    avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in drafts])
-                    avg_wc = np.mean([d["wordcount_after"] - d["wordcount_before"] for d in drafts])
+                valid_drafts = [d for d in drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
+                
+                if valid_drafts:
+                    avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
+                    avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
+                    avg_wc = np.mean([d.get("wordcount_after", 0) - d.get("wordcount_before", 0) for d in valid_drafts])
                     
                     # Count zero-shot successes
-                    zero_shot_gz = sum(1 for d in drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
-                    zero_shot_sp = sum(1 for d in drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                    zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                    zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                     
                     # Calculate average quality
                     quality_scores = []
-                    for d in drafts:
-                        if not d["para_mismatch"] and d.get("flag_counts"):
+                    for d in valid_drafts:
+                        if not d.get("para_mismatch", False) and d.get("flag_counts"):
                             score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
                             quality_scores.append(score)
                     avg_quality = np.mean(quality_scores) if quality_scores else 0
@@ -1019,171 +1094,172 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     comparison_data.append({
                         "Model": model,
                         "Mode": mode.title(),
-                        "Drafts": len(drafts),
+                        "Drafts": len(valid_drafts),
                         "Avg GPTZero": f"{avg_gz:.3f}",
                         "Δ GZ": avg_gz - baseline_gz,
-                        "Zero-shot GZ": f"{zero_shot_gz}/{len(drafts)}",
+                        "Zero-shot GZ": f"{zero_shot_gz}/{len(valid_drafts)}",
                         "Avg Sapling": f"{avg_sp:.3f}",
                         "Δ SP": avg_sp - baseline_sp,
-                        "Zero-shot SP": f"{zero_shot_sp}/{len(drafts)}",
+                        "Zero-shot SP": f"{zero_shot_sp}/{len(valid_drafts)}",
                         "Avg WC Δ": f"{avg_wc:+.0f}",
                         "Avg Quality": f"{avg_quality:.1f}%"
                     })
         
         comparison_df = pd.DataFrame(comparison_data)
         
-        # Style with color coding
-        def style_delta(val):
-            if isinstance(val, (int, float)):
-                if val < 0:
-                    return 'color: green; font-weight: bold'
-                elif val > 0:
-                    return 'color: red; font-weight: bold'
-            return ''
-        
-        styled_comparison = comparison_df.style.applymap(
-            style_delta, subset=['Δ GZ', 'Δ SP']
-        ).format({
-            'Δ GZ': '{:+.3f}',
-            'Δ SP': '{:+.3f}'
-        })
-        
-        st.dataframe(styled_comparison, use_container_width=True, hide_index=True)
-        
-        # Visualization
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### AI Detection Scores by Model & Mode")
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+        if not comparison_df.empty:
+            # Style with color coding
+            def style_delta(val):
+                if isinstance(val, (int, float)):
+                    if val < 0:
+                        return 'color: green; font-weight: bold'
+                    elif val > 0:
+                        return 'color: red; font-weight: bold'
+                return ''
             
-            models = sorted(by_model.keys())
-            x = np.arange(len(models))
-            width = 0.35
+            styled_comparison = comparison_df.style.applymap(
+                style_delta, subset=['Δ GZ', 'Δ SP']
+            ).format({
+                'Δ GZ': '{:+.3f}',
+                'Δ SP': '{:+.3f}'
+            })
             
-            # GPTZero scores
-            doc_scores_gz = []
-            para_scores_gz = []
+            st.dataframe(styled_comparison, use_container_width=True, hide_index=True)
             
-            for model in models:
-                doc_drafts = by_model[model]["doc"]
-                para_drafts = by_model[model]["para"]
+            # Visualization
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### AI Detection Scores by Model & Mode")
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
                 
-                doc_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in doc_drafts]) if doc_drafts else baseline_gz
-                para_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in para_drafts]) if para_drafts else baseline_gz
+                models = sorted(by_model.keys())
+                x = np.arange(len(models))
+                width = 0.35
                 
-                doc_scores_gz.append(doc_score)
-                para_scores_gz.append(para_score)
-            
-            ax1.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
-            
-            # Color bars based on performance vs baseline
-            doc_bars = ax1.bar(x - width/2, doc_scores_gz, width, label='Doc Mode', alpha=0.8)
-            para_bars = ax1.bar(x + width/2, para_scores_gz, width, label='Para Mode', alpha=0.8)
-            
-            for bar, score in zip(doc_bars, doc_scores_gz):
-                if score < baseline_gz:
-                    bar.set_color('green')
-                else:
-                    bar.set_color('red')
-            
-            for bar, score in zip(para_bars, para_scores_gz):
-                if score < baseline_gz:
-                    bar.set_color('green')
-                else:
-                    bar.set_color('red')
-            
-            ax1.set_xlabel('Model')
-            ax1.set_ylabel('GPTZero Score')
-            ax1.set_title('Average GPTZero Scores by Model and Mode')
-            ax1.set_xticks(x)
-            ax1.set_xticklabels(models, rotation=45, ha='right')
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-            
-            # Sapling scores
-            doc_scores_sp = []
-            para_scores_sp = []
-            
-            for model in models:
-                doc_drafts = by_model[model]["doc"]
-                para_drafts = by_model[model]["para"]
+                # GPTZero scores
+                doc_scores_gz = []
+                para_scores_gz = []
                 
-                doc_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in doc_drafts]) if doc_drafts else baseline_sp
-                para_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in para_drafts]) if para_drafts else baseline_sp
+                for model in models:
+                    doc_drafts = [d for d in by_model[model]["doc"] if "scores_after" in d]
+                    para_drafts = [d for d in by_model[model]["para"] if "scores_after" in d]
+                    
+                    doc_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in doc_drafts]) if doc_drafts else baseline_gz
+                    para_score = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in para_drafts]) if para_drafts else baseline_gz
+                    
+                    doc_scores_gz.append(doc_score)
+                    para_scores_gz.append(para_score)
                 
-                doc_scores_sp.append(doc_score)
-                para_scores_sp.append(para_score)
-            
-            ax2.axhline(baseline_sp, color='red', linestyle='--', label='Baseline', alpha=0.7)
-            
-            # Color bars based on performance vs baseline
-            doc_bars = ax2.bar(x - width/2, doc_scores_sp, width, label='Doc Mode', alpha=0.8)
-            para_bars = ax2.bar(x + width/2, para_scores_sp, width, label='Para Mode', alpha=0.8)
-            
-            for bar, score in zip(doc_bars, doc_scores_sp):
-                if score < baseline_sp:
-                    bar.set_color('green')
-                else:
-                    bar.set_color('red')
-            
-            for bar, score in zip(para_bars, para_scores_sp):
-                if score < baseline_sp:
-                    bar.set_color('green')
-                else:
-                    bar.set_color('red')
-            
-            ax2.set_xlabel('Model')
-            ax2.set_ylabel('Sapling Score')
-            ax2.set_title('Average Sapling Scores by Model and Mode')
-            ax2.set_xticks(x)
-            ax2.set_xticklabels(models, rotation=45, ha='right')
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-        
-        with col2:
-            st.markdown("#### Quality Score by Model & Mode")
-            fig, ax = plt.subplots(figsize=(8, 6))
-            
-            doc_quality = []
-            para_quality = []
-            
-            for model in models:
-                # Doc mode quality
-                doc_drafts = by_model[model]["doc"]
-                doc_q_scores = []
-                for d in doc_drafts:
-                    if not d["para_mismatch"] and d.get("flag_counts"):
-                        score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
-                        doc_q_scores.append(score)
-                doc_quality.append(np.mean(doc_q_scores) if doc_q_scores else 0)
+                ax1.axhline(baseline_gz, color='red', linestyle='--', label='Baseline', alpha=0.7)
                 
-                # Para mode quality
-                para_drafts = by_model[model]["para"]
-                para_q_scores = []
-                for d in para_drafts:
-                    if not d["para_mismatch"] and d.get("flag_counts"):
-                        score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
-                        para_q_scores.append(score)
-                para_quality.append(np.mean(para_q_scores) if para_q_scores else 0)
+                # Color bars based on performance vs baseline
+                doc_bars = ax1.bar(x - width/2, doc_scores_gz, width, label='Doc Mode', alpha=0.8)
+                para_bars = ax1.bar(x + width/2, para_scores_gz, width, label='Para Mode', alpha=0.8)
+                
+                for bar, score in zip(doc_bars, doc_scores_gz):
+                    if score < baseline_gz:
+                        bar.set_color('green')
+                    else:
+                        bar.set_color('red')
+                
+                for bar, score in zip(para_bars, para_scores_gz):
+                    if score < baseline_gz:
+                        bar.set_color('green')
+                    else:
+                        bar.set_color('red')
+                
+                ax1.set_xlabel('Model')
+                ax1.set_ylabel('GPTZero Score')
+                ax1.set_title('Average GPTZero Scores by Model and Mode')
+                ax1.set_xticks(x)
+                ax1.set_xticklabels(models, rotation=45, ha='right')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                
+                # Sapling scores
+                doc_scores_sp = []
+                para_scores_sp = []
+                
+                for model in models:
+                    doc_drafts = [d for d in by_model[model]["doc"] if "scores_after" in d]
+                    para_drafts = [d for d in by_model[model]["para"] if "scores_after" in d]
+                    
+                    doc_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in doc_drafts]) if doc_drafts else baseline_sp
+                    para_score = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in para_drafts]) if para_drafts else baseline_sp
+                    
+                    doc_scores_sp.append(doc_score)
+                    para_scores_sp.append(para_score)
+                
+                ax2.axhline(baseline_sp, color='red', linestyle='--', label='Baseline', alpha=0.7)
+                
+                # Color bars based on performance vs baseline
+                doc_bars = ax2.bar(x - width/2, doc_scores_sp, width, label='Doc Mode', alpha=0.8)
+                para_bars = ax2.bar(x + width/2, para_scores_sp, width, label='Para Mode', alpha=0.8)
+                
+                for bar, score in zip(doc_bars, doc_scores_sp):
+                    if score < baseline_sp:
+                        bar.set_color('green')
+                    else:
+                        bar.set_color('red')
+                
+                for bar, score in zip(para_bars, para_scores_sp):
+                    if score < baseline_sp:
+                        bar.set_color('green')
+                    else:
+                        bar.set_color('red')
+                
+                ax2.set_xlabel('Model')
+                ax2.set_ylabel('Sapling Score')
+                ax2.set_title('Average Sapling Scores by Model and Mode')
+                ax2.set_xticks(x)
+                ax2.set_xticklabels(models, rotation=45, ha='right')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
             
-            ax.bar(x - width/2, doc_quality, width, label='Doc Mode', alpha=0.8)
-            ax.bar(x + width/2, para_quality, width, label='Para Mode', alpha=0.8)
-            
-            ax.set_xlabel('Model')
-            ax.set_ylabel('Quality Score (%)')
-            ax.set_title('Average Quality Scores by Model and Mode')
-            ax.set_xticks(x)
-            ax.set_xticklabels(models, rotation=45, ha='right')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(0, 100)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
+            with col2:
+                st.markdown("#### Quality Score by Model & Mode")
+                fig, ax = plt.subplots(figsize=(8, 6))
+                
+                doc_quality = []
+                para_quality = []
+                
+                for model in models:
+                    # Doc mode quality
+                    doc_drafts = by_model[model]["doc"]
+                    doc_q_scores = []
+                    for d in doc_drafts:
+                        if not d.get("para_mismatch", False) and d.get("flag_counts"):
+                            score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
+                            doc_q_scores.append(score)
+                    doc_quality.append(np.mean(doc_q_scores) if doc_q_scores else 0)
+                    
+                    # Para mode quality
+                    para_drafts = by_model[model]["para"]
+                    para_q_scores = []
+                    for d in para_drafts:
+                        if not d.get("para_mismatch", False) and d.get("flag_counts"):
+                            score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
+                            para_q_scores.append(score)
+                    para_quality.append(np.mean(para_q_scores) if para_q_scores else 0)
+                
+                ax.bar(x - width/2, doc_quality, width, label='Doc Mode', alpha=0.8)
+                ax.bar(x + width/2, para_quality, width, label='Para Mode', alpha=0.8)
+                
+                ax.set_xlabel('Model')
+                ax.set_ylabel('Quality Score (%)')
+                ax.set_title('Average Quality Scores by Model and Mode')
+                ax.set_xticks(x)
+                ax.set_xticklabels(models, rotation=45, ha='right')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                ax.set_ylim(0, 100)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
 
     with tab4:
         st.markdown("### Detailed Analysis")
@@ -1196,9 +1272,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         
         # GPTZero Doc mode
         for model in sorted(by_model):
-            doc_drafts = sorted(by_model[model]["doc"], key=lambda x: x["iter"])
+            doc_drafts = [d for d in by_model[model]["doc"] if "scores_after" in d]
+            doc_drafts = sorted(doc_drafts, key=lambda x: x.get("iter", 0))
             if doc_drafts:
-                iterations = [d["iter"] + 1 for d in doc_drafts]
+                iterations = [d.get("iter", 0) + 1 for d in doc_drafts]
                 gz_scores = [d["scores_after"]["group_doc"]["gptzero"] for d in doc_drafts]
                 ax1.plot(iterations, gz_scores, marker='o', label=model)
         
@@ -1212,9 +1289,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         
         # GPTZero Para mode
         for model in sorted(by_model):
-            para_drafts = sorted(by_model[model]["para"], key=lambda x: x["iter"])
+            para_drafts = [d for d in by_model[model]["para"] if "scores_after" in d]
+            para_drafts = sorted(para_drafts, key=lambda x: x.get("iter", 0))
             if para_drafts:
-                iterations = [d["iter"] + 1 for d in para_drafts]
+                iterations = [d.get("iter", 0) + 1 for d in para_drafts]
                 gz_scores = [d["scores_after"]["group_doc"]["gptzero"] for d in para_drafts]
                 ax2.plot(iterations, gz_scores, marker='o', label=model)
         
@@ -1228,9 +1306,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         
         # Sapling Doc mode
         for model in sorted(by_model):
-            doc_drafts = sorted(by_model[model]["doc"], key=lambda x: x["iter"])
+            doc_drafts = [d for d in by_model[model]["doc"] if "scores_after" in d]
+            doc_drafts = sorted(doc_drafts, key=lambda x: x.get("iter", 0))
             if doc_drafts:
-                iterations = [d["iter"] + 1 for d in doc_drafts]
+                iterations = [d.get("iter", 0) + 1 for d in doc_drafts]
                 sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in doc_drafts]
                 ax3.plot(iterations, sp_scores, marker='o', label=model)
         
@@ -1244,9 +1323,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         
         # Sapling Para mode
         for model in sorted(by_model):
-            para_drafts = sorted(by_model[model]["para"], key=lambda x: x["iter"])
+            para_drafts = [d for d in by_model[model]["para"] if "scores_after" in d]
+            para_drafts = sorted(para_drafts, key=lambda x: x.get("iter", 0))
             if para_drafts:
-                iterations = [d["iter"] + 1 for d in para_drafts]
+                iterations = [d.get("iter", 0) + 1 for d in para_drafts]
                 sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in para_drafts]
                 ax4.plot(iterations, sp_scores, marker='o', label=model)
         
@@ -1270,7 +1350,7 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
         for model in sorted(by_model):
             for mode in ["doc", "para"]:
                 for draft in by_model[model][mode]:
-                    if not draft["para_mismatch"] and draft.get("flag_counts"):
+                    if not draft.get("para_mismatch", False) and draft.get("flag_counts"):
                         for flag in GEMINI_FLAGS:
                             success_rate = (draft["flag_counts"].get(flag, 0) / para_total) * 100
                             quality_breakdown[f"{model} ({mode})"][flag].append(success_rate)
