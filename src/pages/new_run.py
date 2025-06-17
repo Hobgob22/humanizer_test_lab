@@ -1,5 +1,5 @@
 # src/pages/new_run.py
-# v7.2 – final bug-free per-folder & equal-count sliders
+# v8.0 – Background job processing with status monitoring
 from __future__ import annotations
 
 import time
@@ -8,10 +8,13 @@ from typing import Dict, List
 
 import streamlit as st
 
-from src.pages.utils import log, show_log, natural_key
-from src.pipeline import run_test
-from src.results_db import save_run, load_run
+from src.pages.utils import natural_key
+from src.results_db import load_run
 from src.models import MODEL_REGISTRY
+from src.job_manager import (
+    start_benchmark_job, get_job, get_active_jobs, 
+    cancel_job, JobStatus
+)
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +69,7 @@ def _select_documents(
     for lbl in folders:
         max_docs = limits[lbl]
         key = f"count_{lbl}"
-        # Initialise once with “all” if not yet present
+        # Initialise once with "all" if not yet present
         if key not in st.session_state:
             st.session_state[key] = max_docs
 
@@ -92,9 +95,141 @@ def _gather_docs(selected: Dict[str, int], paths: Dict[str, str]) -> List[Path]:
     return out
 
 
+def _show_active_jobs():
+    """Display active jobs with status and controls."""
+    jobs = get_active_jobs()
+    if not jobs:
+        return
+    
+    st.subheader("🔄 Active Jobs")
+    
+    for job in jobs:
+        with st.container():
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+            
+            with col1:
+                st.write(f"**{job['run_name']}**")
+                if job['current_doc']:
+                    st.caption(f"Processing: {job['current_doc']}")
+            
+            with col2:
+                progress = job['processed_docs'] / job['total_docs'] if job['total_docs'] > 0 else 0
+                st.progress(progress)
+                st.caption(f"{job['processed_docs']}/{job['total_docs']} docs")
+            
+            with col3:
+                if job['status'] == JobStatus.RUNNING.value:
+                    elapsed = time.time() - job['started_at'] if job['started_at'] else 0
+                    st.caption(f"⏱️ {elapsed/60:.1f} min")
+                else:
+                    st.caption(f"Status: {job['status']}")
+            
+            with col4:
+                if st.button("❌", key=f"cancel_{job['job_id']}", 
+                           help="Cancel this job"):
+                    if cancel_job(job['job_id']):
+                        st.rerun()
+    
+    st.divider()
+
+
+def _show_job_monitor(job_id: str):
+    """Show detailed monitoring for a specific job."""
+    job = get_job(job_id)
+    if not job:
+        st.error("Job not found!")
+        return
+    
+    st.subheader(f"📊 Monitoring: {job['run_name']}")
+    
+    # Status overview
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        status_emoji = {
+            JobStatus.PENDING.value: "⏳",
+            JobStatus.RUNNING.value: "🔄",
+            JobStatus.COMPLETED.value: "✅",
+            JobStatus.FAILED.value: "❌",
+            JobStatus.CANCELLED.value: "🚫"
+        }.get(job['status'], "❓")
+        st.metric("Status", f"{status_emoji} {job['status'].title()}")
+    
+    with col2:
+        progress = job['processed_docs'] / job['total_docs'] if job['total_docs'] > 0 else 0
+        st.metric("Progress", f"{job['processed_docs']}/{job['total_docs']}")
+        st.progress(progress)
+    
+    with col3:
+        if job['started_at']:
+            if job['completed_at']:
+                duration = (job['completed_at'] - job['started_at']) / 60
+                st.metric("Duration", f"{duration:.1f} min")
+            else:
+                elapsed = (time.time() - job['started_at']) / 60
+                st.metric("Elapsed", f"{elapsed:.1f} min")
+        else:
+            st.metric("Duration", "Not started")
+    
+    with col4:
+        if job['status'] in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
+            if st.button("Cancel Job", type="secondary"):
+                if cancel_job(job_id):
+                    st.success("Job cancelled")
+                    time.sleep(1)
+                    st.rerun()
+    
+    # Current document
+    if job['current_doc'] and job['status'] == JobStatus.RUNNING.value:
+        st.info(f"🔄 Currently processing: **{job['current_doc']}**")
+    
+    # Error display
+    if job['error']:
+        st.error(f"Error: {job['error']}")
+    
+    # Logs
+    if job['logs']:
+        import json
+        logs = json.loads(job['logs'])
+        if logs:
+            with st.expander("📜 Job Logs", expanded=True):
+                # Show last 20 logs
+                for log_entry in logs[-20:]:
+                    timestamp = time.strftime('%H:%M:%S', time.localtime(log_entry['timestamp']))
+                    st.text(f"[{timestamp}] {log_entry['message']}")
+    
+    # Auto-refresh for active jobs
+    if job['status'] in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
+        time.sleep(2)  # Wait 2 seconds before refresh
+        st.rerun()
+    
+    # Show completion message
+    if job['status'] == JobStatus.COMPLETED.value:
+        st.success(f"✅ Benchmark completed successfully!")
+        st.balloons()
+        
+        # Show button to go to analysis
+        if st.button("📊 View Results", type="primary"):
+            st.session_state.page = "Benchmark Analysis"
+            st.rerun()
+
+
 # ═════════════════════════════════ PAGE ════════════════════════════════
 def page_new_run():
     st.header("⚡️ Launch new benchmark")
+
+    # Check if we're monitoring a job
+    if "monitoring_job" in st.session_state:
+        _show_job_monitor(st.session_state.monitoring_job)
+        
+        if st.button("← Back to New Run"):
+            del st.session_state.monitoring_job
+            st.rerun()
+        
+        return
+    
+    # Show active jobs
+    _show_active_jobs()
 
     with st.expander("ℹ️ About Benchmarking", expanded=False):
         st.markdown(
@@ -105,6 +240,13 @@ def page_new_run():
             * Measures AI-detection scores **before & after** humanization  
             * Evaluates content-quality preservation  
             * Runs several iterations for robustness
+            
+            **Background Processing**
+            
+            * Jobs run in the background - you can navigate away safely
+            * Progress is saved to database and persists across reloads
+            * Multiple jobs can run concurrently
+            * Jobs can be cancelled at any time
             """
         )
 
@@ -161,14 +303,12 @@ def page_new_run():
             f"= **{total_drafts} drafts**"
         )
 
-    # ── 6 · live log placeholder ───────────────────────────────────
-    log_box = st.empty()
-
-    # ── 7 · RUN button ─────────────────────────────────────────────
+    # ── 6 · RUN button ─────────────────────────────────────────────
     if st.button(
-        "🚀 Run benchmark",
+        "🚀 Start Job",
         type="primary",
         disabled=not (run_name.strip() and folder_labels and model_labels),
+        help="Start the benchmark as a background job"
     ):
         if load_run(run_name):
             st.error("Run name already exists")
@@ -179,62 +319,21 @@ def page_new_run():
             st.error("No .docx files found for the current settings")
             st.stop()
 
-        # ── initial log ────────────────────────────────────────────
-        log(f"🚀 Benchmark **{run_name}**")
-        log(
-            "📂 Folders: "
-            + ", ".join(f"{f}({doc_counts[f]})" for f in folder_labels)
-        )
-        log(f"🤖 Models:  {', '.join(model_labels)}")
-        log(f"🔁 Iterations: {iterations}")
-        log(f"📝 Total drafts: {len(docs)*len(model_labels)*iterations*2}")
-        show_log(log_box)
-
-        # ── processing loop ────────────────────────────────────────
-        with st.status("Running benchmark …", expanded=True) as status:
-            t0 = time.time()
-            results = []
-
-            for idx, doc_path in enumerate(docs, 1):
-                status.update(label=f"{idx}/{len(docs)} – {doc_path.name}")
-                st.progress(idx / len(docs))
-                log(f"\n📄 ({idx}/{len(docs)}) {doc_path.name}")
-                show_log(log_box)
-
-                try:
-                    res = run_test(doc_path, model_labels, log, iterations)
-                    if res.get("runs"):
-                        results.append(res)
-                        log(f"✅ Completed {doc_path.name} – {len(res['runs'])} drafts")
-                    else:
-                        log(f"⚠️  Skipped {doc_path.name} (no paragraphs)")
-                except Exception as e:
-                    log(f"❌ ERROR in {doc_path.name}: {e}")
-
-                show_log(log_box)
-
-            # ── save run ───────────────────────────────────────────
-            duration = (time.time() - t0) / 60
-            log(f"\n💾 Saving run **{run_name}** (took {duration:.1f} min)")
-            save_run(
-                run_name,
-                folder_labels,
-                model_labels,
-                {"docs": results, "iterations": iterations, "doc_counts": doc_counts},
+        # Start background job
+        with st.spinner("Starting background job..."):
+            job_id = start_benchmark_job(
+                run_name=run_name,
+                docs=docs,
+                folders=folder_labels,
+                models=model_labels,
+                iterations=iterations,
+                doc_counts=doc_counts
             )
-            show_log(log_box)
-            status.update(label="Benchmark finished!", state="complete", expanded=False)
-
-        # ── summary ───────────────────────────────────────────────
-        st.success(f"✅ Run **{run_name}** completed in {duration:.1f} minutes")
-
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("📄 Documents", len(results))
-        with col2:
-            st.metric("📝 Drafts", sum(len(d["runs"]) for d in results))
-        with col3:
-            st.metric("🤖 Models", len(model_labels))
-        with col4:
-            avg_sec = (duration * 60) / len(results) if results else 0
-            st.metric("⏱️ Avg time/doc", f"{avg_sec:.1f}s")
+            
+            st.success(f"✅ Job started! ID: {job_id}")
+            st.info("The job is running in the background. You can navigate to other pages or close this tab.")
+            
+            # Set monitoring flag
+            st.session_state.monitoring_job = job_id
+            time.sleep(1)
+            st.rerun()
