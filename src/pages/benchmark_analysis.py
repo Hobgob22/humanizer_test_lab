@@ -1,8 +1,3 @@
-# src/pages/benchmark_analysis.py
-# ──────────────────────────────────────────────────────────────────────────────
-# Dashboard analysis & reporting
-# v2 – adds per-folder Model-Performance view + correct zero-shot weighting
-# ──────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import time
@@ -30,25 +25,31 @@ from src.results_db import delete_run, list_runs, load_run
 ROOT = Path(__file__).resolve().parents[2]
 
 # ═════════════════════ utilities: analytics ════════════════════════════
+
 def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
-    """Yield `(doc, draft)` pairs for every draft contained in *docs*."""
+    """Yield ``(doc, draft)`` pairs for every draft in *docs*."""
     for doc in docs:
         for d in doc.get("runs", []):
             yield doc, d
 
 
-def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, Any]:
-    """
-    Build nested statistics dict:  folder → model → mode → stats.
+# ---------------------------------------------------------------------
+# The big refactor below:  we **preserve raw hit counts** for zero‑shot so
+# later aggregations can be done without re‑deriving from rounded ratios.
+# ---------------------------------------------------------------------
 
-    *Zero-shot* success is stored as **percentage** per bucket but derived from
-    raw counts so later aggregations can be performed with proper weighting.
+def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, Any]:
+    """Return nested dict  *folder → model → mode → stats*.
+
+    Each *stats* now contains **both**:
+      • ``zs_hits``  – dict with exact hit counts  {detector: int}
+      • ``zs_pct``   – dict with percentage floats  {detector: float}
     """
     stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
     )
 
-    # ── folder-level baselines -------------------------------------------------
+    # ── baselines per folder -----------------------------------------------
     folder_baselines: DefaultDict[str, List[Dict]] = defaultdict(list)
     for doc in docs:
         if not doc.get("runs"):
@@ -59,8 +60,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
             and "group_doc" in first["scores_before"]
             and "gptzero" in first["scores_before"]["group_doc"]
         ):
-            folder = doc.get("folder", "unknown")
-            folder_baselines[folder].append(
+            folder_baselines[doc.get("folder", "unknown")].append(
                 {
                     "gptzero": first["scores_before"]["group_doc"]["gptzero"],
                     "sapling": first["scores_before"]["group_doc"]["sapling"],
@@ -77,14 +77,11 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         for f, bl in folder_baselines.items()
     }
 
-    # ── collect per-draft data -------------------------------------------------
+    # ── per‑draft collection -----------------------------------------------
     for doc in docs:
         folder = doc.get("folder", "unknown")
         for draft in doc.get("runs", []):
-            if (
-                "scores_after" not in draft
-                or "group_doc" not in draft["scores_after"]
-            ):
+            if "scores_after" not in draft or "group_doc" not in draft["scores_after"]:
                 continue
             model = draft.get("model", "unknown")
             mode = draft.get("mode", "unknown")
@@ -97,41 +94,38 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     "quality_flags": defaultdict(list),
                     "draft_count": 0,
                     "mismatch_count": 0,
-                    "zero_shot_success_count_gz": 0,
-                    "zero_shot_success_count_sp": 0,
+                    "zs_hits": {"gptzero": 0, "sapling": 0},
                 },
             )
 
-            # after scores
+            # scores after humanization
             gz_after = draft["scores_after"]["group_doc"].get("gptzero", 0)
             sp_after = draft["scores_after"]["group_doc"].get("sapling", 0)
             bucket["after_scores"].append({"gptzero": gz_after, "sapling": sp_after})
 
-            # zero-shot
+            # zero‑shot hit counts (exact integers!)
             if gz_after <= ZERO_SHOT_THRESHOLD:
-                bucket["zero_shot_success_count_gz"] += 1
+                bucket["zs_hits"]["gptzero"] += 1
             if sp_after <= ZERO_SHOT_THRESHOLD:
-                bucket["zero_shot_success_count_sp"] += 1
+                bucket["zs_hits"]["sapling"] += 1
 
-            # word-count delta
+            # word‑count delta
             bucket["wc_deltas"].append(
                 draft.get("wordcount_after", 0) - draft.get("wordcount_before", 0)
             )
 
-            # quality flags (skip if paragraph-mismatch)
+            # quality flags
             if not draft.get("para_mismatch", False):
                 for flag in GEMINI_FLAGS:
-                    count = draft.get("flag_counts", {}).get(flag, 0)
+                    cnt = draft.get("flag_counts", {}).get(flag, 0)
                     total = draft.get("para_count_before", 1)
-                    bucket["quality_flags"][flag].append(
-                        (count / total) * 100 if total else 0
-                    )
+                    bucket["quality_flags"][flag].append((cnt / total) * 100 if total else 0)
 
             bucket["draft_count"] += 1
             if draft.get("para_mismatch", False):
                 bucket["mismatch_count"] += 1
 
-    # ── aggregate ----------------------------------------------------------------
+    # ── aggregate per bucket -----------------------------------------------
     result: Dict[str, Any] = {}
     for folder, models in stats.items():
         baseline = folder_avg_baselines.get(folder, {"gptzero": 0.5, "sapling": 0.5})
@@ -142,8 +136,12 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 if not data["draft_count"]:
                     continue
 
-                after_gz = np.mean([a["gptzero"] for a in data["after_scores"]])
-                after_sp = np.mean([a["sapling"] for a in data["after_scores"]])
+                after_gz = np.mean([s["gptzero"] for s in data["after_scores"]])
+                after_sp = np.mean([s["sapling"] for s in data["after_scores"]])
+
+                # percentages with full precision, no rounding yet
+                zs_pct_gz = data["zs_hits"]["gptzero"] / data["draft_count"] * 100
+                zs_pct_sp = data["zs_hits"]["sapling"] / data["draft_count"] * 100
 
                 result[folder][model][mode] = {
                     "baseline": baseline,
@@ -151,38 +149,27 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     "deltas": {
                         "gptzero": after_gz - baseline["gptzero"],
                         "sapling": after_sp - baseline["sapling"],
-                        "wordcount": np.mean(data["wc_deltas"])
-                        if data["wc_deltas"]
-                        else 0,
+                        "wordcount": np.mean(data["wc_deltas"]) if data["wc_deltas"] else 0,
                     },
                     "quality": {
-                        flag: np.mean(values) if values else 0
-                        for flag, values in data["quality_flags"].items()
+                        flag: np.mean(vals) if vals else 0
+                        for flag, vals in data["quality_flags"].items()
                     },
                     "draft_count": data["draft_count"],
-                    "mismatch_rate": data["mismatch_count"]
-                    / data["draft_count"]
-                    * 100,
-                    "zero_shot_success": {
-                        "gptzero": data["zero_shot_success_count_gz"]
-                        / data["draft_count"]
-                        * 100,
-                        "sapling": data["zero_shot_success_count_sp"]
-                        / data["draft_count"]
-                        * 100,
-                    },
+                    "mismatch_rate": data["mismatch_count"] / data["draft_count"] * 100,
+                    # keep both counts **and** pct
+                    "zs_hits": data["zs_hits"],
+                    "zero_shot_success": {"gptzero": zs_pct_gz, "sapling": zs_pct_sp},
                 }
     return result
 
 
-# ═════════════ helpers for “Model Performance” tab ════════════════════
+# ═══════════ helper: build model‑perf dataframe ═══════════════════════
+
 def _compute_model_perf(
     stats: Dict[str, Any], restrict_folders: Set[str] | None = None
 ) -> pd.DataFrame:
-    """
-    Build a DataFrame summarising model performance, optionally limited to
-    *restrict_folders*.  Zero-shot success is weighted by draft counts.
-    """
+    """Summarise performance, using exact hit counts (no rounding error)."""
     agg: DefaultDict[str, DefaultDict[str, Dict[str, Any]]] = defaultdict(
         lambda: defaultdict(
             lambda: {
@@ -207,13 +194,8 @@ def _compute_model_perf(
                 bucket["sp_deltas"].append(s["deltas"]["sapling"])
                 bucket["quality"].append(np.mean(list(s["quality"].values())))
                 bucket["drafts"] += s["draft_count"]
-                # convert percentage back to hit-count
-                bucket["zs_gz_hits"] += (
-                    s["zero_shot_success"]["gptzero"] / 100 * s["draft_count"]
-                )
-                bucket["zs_sp_hits"] += (
-                    s["zero_shot_success"]["sapling"] / 100 * s["draft_count"]
-                )
+                bucket["zs_gz_hits"] += s["zs_hits"]["gptzero"]
+                bucket["zs_sp_hits"] += s["zs_hits"]["sapling"]
                 bucket["folders"].add(folder)
 
     rows = []
@@ -222,8 +204,6 @@ def _compute_model_perf(
             m = modes.get(mode)
             if not m or m["drafts"] == 0:
                 continue
-            zs_gz_pct = m["zs_gz_hits"] / m["drafts"] * 100
-            zs_sp_pct = m["zs_sp_hits"] / m["drafts"] * 100
             rows.append(
                 {
                     "Model": model,
@@ -231,8 +211,8 @@ def _compute_model_perf(
                     "Total Drafts": m["drafts"],
                     "Avg Δ GZ": np.mean(m["gz_deltas"]),
                     "Avg Δ SP": np.mean(m["sp_deltas"]),
-                    "Zero-shot GZ": f"{zs_gz_pct:.1f}%",
-                    "Zero-shot SP": f"{zs_sp_pct:.1f}%",
+                    "Zero-shot GZ": f"{m['zs_gz_hits'] / m['drafts'] * 100:.1f}%",
+                    "Zero-shot SP": f"{m['zs_sp_hits'] / m['drafts'] * 100:.1f}%",
                     "Avg Quality": f"{np.mean(m['quality']):.1f}%",
                     "Folders": len(m["folders"]),
                 }
@@ -240,21 +220,23 @@ def _compute_model_perf(
     return pd.DataFrame(rows)
 
 
-def _style_delta(val):
-    if isinstance(val, (int, float)):
-        if val < 0:
+# ── styling helpers remain unchanged ──────────────────────────────────
+
+def _style_delta(v):
+    if isinstance(v, (int, float)):
+        if v < 0:
             return "color: green; font-weight: bold"
-        if val > 0:
+        if v > 0:
             return "color: red; font-weight: bold"
     return ""
 
 
-def _style_zs(val):
-    if isinstance(val, str) and val.endswith("%"):
-        v = float(val.rstrip("%"))
-        if v >= 80:
+def _style_zs(v):
+    if isinstance(v, str) and v.endswith("%"):
+        f = float(v.rstrip("%"))
+        if f >= 80:
             return "color: green; font-weight: bold"
-        if 50 <= v < 80:
+        if 50 <= f < 80:
             return "color: orange"
         return "color: red"
     return ""
