@@ -1,179 +1,318 @@
-# src/pages/benchmark_analysis.py - Analysis and reporting
+# src/pages/benchmark_analysis.py
+# ──────────────────────────────────────────────────────────────────────────────
+# Dashboard analysis & reporting
+# v2 – adds per-folder Model-Performance view + correct zero-shot weighting
+# ──────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Any, Tuple, DefaultDict
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, DefaultDict, Dict, List, Set, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
 
-from src.pages.utils import (
-    qp_get, qp_set, colored_metric, render_draft, safe_hist,
-    GEMINI_FLAGS
-)
 from src.config import ZERO_SHOT_THRESHOLD
-
-from src.results_db import list_runs, load_run, delete_run
+from src.pages.utils import (
+    GEMINI_FLAGS,
+    colored_metric,
+    qp_get,
+    qp_set,
+    render_draft,
+    safe_hist,
+)
+from src.results_db import delete_run, list_runs, load_run
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
 
 # ═════════════════════ utilities: analytics ════════════════════════════
 def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
+    """Yield `(doc, draft)` pairs for every draft contained in *docs*."""
     for doc in docs:
         for d in doc.get("runs", []):
             yield doc, d
 
+
 def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, Any]:
     """
-    Calculate detailed statistics separated by model, mode, and folder.
-    Returns nested structure: folder -> model -> mode -> stats
-    Now includes zero-shot success rates for both detectors.
+    Build nested statistics dict:  folder → model → mode → stats.
+
+    *Zero-shot* success is stored as **percentage** per bucket but derived from
+    raw counts so later aggregations can be performed with proper weighting.
     """
-    # Initialize nested structure
-    stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = \
-        defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-    
-    # First, collect folder baselines (one per document, not per draft)
+    stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(dict))
+    )
+
+    # ── folder-level baselines -------------------------------------------------
     folder_baselines: DefaultDict[str, List[Dict]] = defaultdict(list)
     for doc in docs:
-        folder = doc.get("folder", "unknown")
-        runs = doc.get("runs", [])
-        if runs and len(runs) > 0:
-            # Check if the first run has the expected structure
-            first_run = runs[0]
-            if "scores_before" in first_run and "group_doc" in first_run["scores_before"]:
-                folder_baselines[folder].append({
-                    "gptzero": first_run["scores_before"]["group_doc"]["gptzero"],
-                    "sapling": first_run["scores_before"]["group_doc"]["sapling"],
-                    "wordcount": first_run.get("wordcount_before", 0)
-                })
-    
-    # Calculate average baselines per folder
-    folder_avg_baselines = {}
-    for folder, baselines in folder_baselines.items():
-        if baselines:  # Only calculate if we have data
-            folder_avg_baselines[folder] = {
-                "gptzero": np.mean([b["gptzero"] for b in baselines]),
-                "sapling": np.mean([b["sapling"] for b in baselines]),
-                "wordcount": np.mean([b["wordcount"] for b in baselines])
-            }
-        else:
-            # Default values if no baseline data
-            folder_avg_baselines[folder] = {
-                "gptzero": 0.5,  # Default middle value
-                "sapling": 0.5,
-                "wordcount": 0
-            }
-    
-    # Collect data
+        if not doc.get("runs"):
+            continue
+        first = doc["runs"][0]
+        if (
+            "scores_before" in first
+            and "group_doc" in first["scores_before"]
+            and "gptzero" in first["scores_before"]["group_doc"]
+        ):
+            folder = doc.get("folder", "unknown")
+            folder_baselines[folder].append(
+                {
+                    "gptzero": first["scores_before"]["group_doc"]["gptzero"],
+                    "sapling": first["scores_before"]["group_doc"]["sapling"],
+                    "wordcount": first.get("wordcount_before", 0),
+                }
+            )
+
+    folder_avg_baselines = {
+        f: {
+            "gptzero": np.mean([b["gptzero"] for b in bl]),
+            "sapling": np.mean([b["sapling"] for b in bl]),
+            "wordcount": np.mean([b["wordcount"] for b in bl]),
+        }
+        for f, bl in folder_baselines.items()
+    }
+
+    # ── collect per-draft data -------------------------------------------------
     for doc in docs:
         folder = doc.get("folder", "unknown")
-        runs = doc.get("runs", [])
-        if not runs:
-            continue
-        
-        for draft in runs:
-            # Skip drafts that don't have required data
-            if "scores_after" not in draft or "group_doc" not in draft["scores_after"]:
+        for draft in doc.get("runs", []):
+            if (
+                "scores_after" not in draft
+                or "group_doc" not in draft["scores_after"]
+            ):
                 continue
-                
             model = draft.get("model", "unknown")
             mode = draft.get("mode", "unknown")
-            
-            # Initialize lists if not exists
-            if "scores" not in stats[folder][model][mode]:
-                stats[folder][model][mode] = {
+
+            bucket = stats[folder][model].setdefault(
+                mode,
+                {
                     "after_scores": [],
                     "wc_deltas": [],
                     "quality_flags": defaultdict(list),
                     "draft_count": 0,
                     "mismatch_count": 0,
-                    "zero_shot_gz": 0,  # Count of drafts with GPTZero <= 10%
-                    "zero_shot_sp": 0,  # Count of drafts with Sapling <= 10%
-                }
-            
-            s = stats[folder][model][mode]
-            
-            # Add after scores
+                    "zero_shot_success_count_gz": 0,
+                    "zero_shot_success_count_sp": 0,
+                },
+            )
+
+            # after scores
             gz_after = draft["scores_after"]["group_doc"].get("gptzero", 0)
             sp_after = draft["scores_after"]["group_doc"].get("sapling", 0)
-            
-            s["after_scores"].append({
-                "gptzero": gz_after,
-                "sapling": sp_after,
-                "wordcount": draft.get("wordcount_after", 0)
-            })
-            
-            # Count zero-shot successes
+            bucket["after_scores"].append({"gptzero": gz_after, "sapling": sp_after})
+
+            # zero-shot
             if gz_after <= ZERO_SHOT_THRESHOLD:
-                s["zero_shot_gz"] += 1
+                bucket["zero_shot_success_count_gz"] += 1
             if sp_after <= ZERO_SHOT_THRESHOLD:
-                s["zero_shot_sp"] += 1
-            
-            # Word count delta
-            wc_before = draft.get("wordcount_before", 0)
-            wc_after = draft.get("wordcount_after", 0)
-            s["wc_deltas"].append(wc_after - wc_before)
-            
-            # Quality flags
+                bucket["zero_shot_success_count_sp"] += 1
+
+            # word-count delta
+            bucket["wc_deltas"].append(
+                draft.get("wordcount_after", 0) - draft.get("wordcount_before", 0)
+            )
+
+            # quality flags (skip if paragraph-mismatch)
             if not draft.get("para_mismatch", False):
                 for flag in GEMINI_FLAGS:
                     count = draft.get("flag_counts", {}).get(flag, 0)
                     total = draft.get("para_count_before", 1)
-                    s["quality_flags"][flag].append((count / total) * 100 if total > 0 else 0)
-            
-            s["draft_count"] += 1
+                    bucket["quality_flags"][flag].append(
+                        (count / total) * 100 if total else 0
+                    )
+
+            bucket["draft_count"] += 1
             if draft.get("para_mismatch", False):
-                s["mismatch_count"] += 1
-    
-    # Calculate aggregated statistics
-    result = {}
+                bucket["mismatch_count"] += 1
+
+    # ── aggregate ----------------------------------------------------------------
+    result: Dict[str, Any] = {}
     for folder, models in stats.items():
+        baseline = folder_avg_baselines.get(folder, {"gptzero": 0.5, "sapling": 0.5})
         result[folder] = {}
-        folder_baseline = folder_avg_baselines.get(folder, {"gptzero": 0.5, "sapling": 0.5})
-        
         for model, modes in models.items():
             result[folder][model] = {}
             for mode, data in modes.items():
-                if not data["after_scores"]:
+                if not data["draft_count"]:
                     continue
-                    
-                # Calculate averages
+
                 after_gz = np.mean([a["gptzero"] for a in data["after_scores"]])
                 after_sp = np.mean([a["sapling"] for a in data["after_scores"]])
-                
+
                 result[folder][model][mode] = {
-                    "baseline": {
-                        "gptzero": folder_baseline["gptzero"],
-                        "sapling": folder_baseline["sapling"],
-                    },
-                    "after": {
-                        "gptzero": after_gz,
-                        "sapling": after_sp,
-                    },
+                    "baseline": baseline,
+                    "after": {"gptzero": after_gz, "sapling": after_sp},
                     "deltas": {
-                        "gptzero": after_gz - folder_baseline["gptzero"],
-                        "sapling": after_sp - folder_baseline["sapling"],
-                        "wordcount": np.mean(data["wc_deltas"]) if data["wc_deltas"] else 0
+                        "gptzero": after_gz - baseline["gptzero"],
+                        "sapling": after_sp - baseline["sapling"],
+                        "wordcount": np.mean(data["wc_deltas"])
+                        if data["wc_deltas"]
+                        else 0,
                     },
                     "quality": {
-                        flag: np.mean(data["quality_flags"][flag]) if data["quality_flags"][flag] else 0
-                        for flag in GEMINI_FLAGS
+                        flag: np.mean(values) if values else 0
+                        for flag, values in data["quality_flags"].items()
                     },
                     "draft_count": data["draft_count"],
-                    "mismatch_rate": (data["mismatch_count"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
+                    "mismatch_rate": data["mismatch_count"]
+                    / data["draft_count"]
+                    * 100,
                     "zero_shot_success": {
-                        "gptzero": (data["zero_shot_gz"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
-                        "sapling": (data["zero_shot_sp"] / data["draft_count"] * 100) if data["draft_count"] > 0 else 0,
-                    }
+                        "gptzero": data["zero_shot_success_count_gz"]
+                        / data["draft_count"]
+                        * 100,
+                        "sapling": data["zero_shot_success_count_sp"]
+                        / data["draft_count"]
+                        * 100,
+                    },
                 }
-    
     return result
+
+
+# ═════════════ helpers for “Model Performance” tab ════════════════════
+def _compute_model_perf(
+    stats: Dict[str, Any], restrict_folders: Set[str] | None = None
+) -> pd.DataFrame:
+    """
+    Build a DataFrame summarising model performance, optionally limited to
+    *restrict_folders*.  Zero-shot success is weighted by draft counts.
+    """
+    agg: DefaultDict[str, DefaultDict[str, Dict[str, Any]]] = defaultdict(
+        lambda: defaultdict(
+            lambda: {
+                "gz_deltas": [],
+                "sp_deltas": [],
+                "quality": [],
+                "drafts": 0,
+                "zs_gz_hits": 0,
+                "zs_sp_hits": 0,
+                "folders": set(),
+            }
+        )
+    )
+
+    for folder, models in stats.items():
+        if restrict_folders and folder not in restrict_folders:
+            continue
+        for model, modes in models.items():
+            for mode, s in modes.items():
+                bucket = agg[model][mode]
+                bucket["gz_deltas"].append(s["deltas"]["gptzero"])
+                bucket["sp_deltas"].append(s["deltas"]["sapling"])
+                bucket["quality"].append(np.mean(list(s["quality"].values())))
+                bucket["drafts"] += s["draft_count"]
+                # convert percentage back to hit-count
+                bucket["zs_gz_hits"] += (
+                    s["zero_shot_success"]["gptzero"] / 100 * s["draft_count"]
+                )
+                bucket["zs_sp_hits"] += (
+                    s["zero_shot_success"]["sapling"] / 100 * s["draft_count"]
+                )
+                bucket["folders"].add(folder)
+
+    rows = []
+    for model, modes in agg.items():
+        for mode in ("doc", "para"):
+            m = modes.get(mode)
+            if not m or m["drafts"] == 0:
+                continue
+            zs_gz_pct = m["zs_gz_hits"] / m["drafts"] * 100
+            zs_sp_pct = m["zs_sp_hits"] / m["drafts"] * 100
+            rows.append(
+                {
+                    "Model": model,
+                    "Mode": mode.title(),
+                    "Total Drafts": m["drafts"],
+                    "Avg Δ GZ": np.mean(m["gz_deltas"]),
+                    "Avg Δ SP": np.mean(m["sp_deltas"]),
+                    "Zero-shot GZ": f"{zs_gz_pct:.1f}%",
+                    "Zero-shot SP": f"{zs_sp_pct:.1f}%",
+                    "Avg Quality": f"{np.mean(m['quality']):.1f}%",
+                    "Folders": len(m["folders"]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _style_delta(val):
+    if isinstance(val, (int, float)):
+        if val < 0:
+            return "color: green; font-weight: bold"
+        if val > 0:
+            return "color: red; font-weight: bold"
+    return ""
+
+
+def _style_zs(val):
+    if isinstance(val, str) and val.endswith("%"):
+        v = float(val.rstrip("%"))
+        if v >= 80:
+            return "color: green; font-weight: bold"
+        if 50 <= v < 80:
+            return "color: orange"
+        return "color: red"
+    return ""
+
+
+def _render_model_perf(df: pd.DataFrame, title_suffix: str = "") -> None:
+    """Render summary table + leaderboards for a given DataFrame."""
+    if df.empty:
+        st.info("No data available for this selection.")
+        return
+
+    styled = (
+        df.style.applymap(_style_delta, subset=["Avg Δ GZ", "Avg Δ SP"])
+        .applymap(_style_zs, subset=["Zero-shot GZ", "Zero-shot SP"])
+        .format({"Avg Δ GZ": "{:.3f}", "Avg Δ SP": "{:.3f}"})
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # ── leaderboards ----------------------------------------------------------
+    st.markdown(f"### 🏆 Best Performers {title_suffix}")
+    col1, col2 = st.columns(2)
+
+    df_num = df.copy()
+    df_num["ZS_GZ_num"] = df_num["Zero-shot GZ"].str.rstrip("%").astype(float)
+    df_num["ZS_SP_num"] = df_num["Zero-shot SP"].str.rstrip("%").astype(float)
+
+    with col1:
+        st.markdown("#### Best AI Score Reduction")
+        st.caption("Largest negative Δ scores")
+        st.markdown("**GPTZero:**")
+        st.dataframe(
+            df_num.nsmallest(5, "Avg Δ GZ")[["Model", "Mode", "Avg Δ GZ"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.markdown("**Sapling:**")
+        st.dataframe(
+            df_num.nsmallest(5, "Avg Δ SP")[["Model", "Mode", "Avg Δ SP"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    with col2:
+        st.markdown("#### Best Zero-shot Success")
+        st.caption("Highest percentage of drafts ≤ 10 % AI detection")
+        st.markdown("**GPTZero:**")
+        st.dataframe(
+            df_num.nlargest(5, "ZS_GZ_num")[["Model", "Mode", "Zero-shot GZ"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.markdown("**Sapling:**")
+        st.dataframe(
+            df_num.nlargest(5, "ZS_SP_num")[["Model", "Mode", "Zero-shot SP"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+
 
 def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.DataFrame:
     """Create a comparison table for all models in a specific folder"""
@@ -206,84 +345,80 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
     df = pd.DataFrame(rows)
     return df
 
-# ═══════════════ RUN OVERVIEW & DOC PAGE ════════════════════════════
-def page_runs():
-    run_id   = qp_get("run")
+# ═══════════════ RUN OVERVIEW & DOC PAGE (main) ═══════════════════════
+def page_runs() -> None:
+    # --- run selection --------------------------------------------------------
+    run_id = qp_get("run")
     doc_name = qp_get("doc")
-    view     = qp_get("view")
+    view = qp_get("view")
 
     runs_meta = list_runs()
     if not runs_meta:
         st.info("No benchmarks stored yet. Create a new run to get started!")
         return
 
-    # Run selector with metadata
-    run_options = []
-    for r in runs_meta:
-        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"]))
-        run_options.append(f"{r['name']} ({ts})")
-    
-    selected_idx = 0
-    if run_id:
-        for i, r in enumerate(runs_meta):
-            if r["name"] == run_id:
-                selected_idx = i
-                break
-    
-    selected = st.selectbox("Select benchmark run", run_options, index=selected_idx)
-    run_id = runs_meta[run_options.index(selected)]["name"]
-    
+    run_labels = [
+        f"{r['name']} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))})"
+        for r in runs_meta
+    ]
+    default_idx = next((i for i, r in enumerate(runs_meta) if r["name"] == run_id), 0)
+    selected = st.selectbox("Select benchmark run", run_labels, index=default_idx)
+    run_id = runs_meta[run_labels.index(selected)]["name"]
+
     run = load_run(run_id) or {}
-    docs = run.get("docs", [])
+    docs: List[Dict] = run.get("docs", [])
     if not docs:
         st.warning("Selected run is empty.")
         return
 
+    # single-document deep-dive
     if view == "doc" and doc_name:
         _page_document(run_id, docs, doc_name)
         return
 
-    # Overview page
+    # --- overview header ------------------------------------------------------
     st.header(f"📊 Benchmark Analysis: **{run_id}**")
-    
-    # Count successful vs failed documents
+
     successful_docs = sum(1 for d in docs if d.get("runs"))
-    failed_docs = sum(1 for d in docs if not d.get("runs"))
+    failed_docs = len(docs) - successful_docs
     total_drafts = sum(len(d.get("runs", [])) for d in docs)
-    
-    # Top-level metrics
+
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("📄 Documents", len(docs), help="Total number of documents processed in this benchmark")
+        st.metric("📄 Documents", len(docs))
     with col2:
-        st.metric("✅ Successful", successful_docs, help="Documents successfully processed")
+        st.metric("✅ Successful", successful_docs)
     with col3:
-        st.metric("❌ Failed", failed_docs, help="Documents that failed processing")
+        st.metric("❌ Failed", failed_docs)
     with col4:
-        st.metric("📝 Total drafts", total_drafts, 
-                  help="Total humanized drafts generated (documents × models × iterations × 2 modes)")
+        st.metric("📝 Total drafts", total_drafts)
     with col5:
-        models_used = set()
-        for doc in docs:
-            for draft in doc.get("runs", []):
-                models_used.add(draft.get("model", "unknown"))
-        st.metric("🤖 Models", len(models_used), help="Number of different humanizer models tested")
+        models_used = {
+            draft.get("model", "unknown")
+            for doc in docs
+            for draft in doc.get("runs", [])
+        }
+        st.metric("🤖 Models", len(models_used))
 
-    # Show warnings if there were failures
-    if failed_docs > 0:
-        st.warning(f"⚠️ {failed_docs} documents failed processing. They are excluded from statistics but listed in the Documents tab.")
+    if failed_docs:
+        st.warning(
+            f"⚠️ {failed_docs} documents failed processing. "
+            "They are excluded from statistics but listed in the Documents tab."
+        )
 
-    # Calculate detailed statistics
+    # ── calculate analytics once ---------------------------------------------
     detailed_stats = _aggregate_statistics_by_model_mode_folder(docs)
 
-    # Create tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 By Folder & Model", 
-        "📈 Model Performance", 
-        "📁 Folder Summary", 
-        "📊 Distributions",
-        "📄 Documents"
-    ])
+    # --- main tabs ------------------------------------------------------------
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        [
+            "📊 By Folder & Model",
+            "📈 Model Performance",
+            "📁 Folder Summary",
+            "📊 Distributions",
+            "📄 Documents",
+        ]
+    )
     
     with tab1:
         st.subheader("🎯 Detailed Statistics by Folder, Model, and Mode")
@@ -486,116 +621,36 @@ def page_runs():
                     st.info("No data for this folder")
     
     with tab2:
-        st.subheader("📈 Model Performance Across All Folders")
-        
+        st.subheader("📈 Model Performance")
         with st.expander("ℹ️ About this view", expanded=False):
-            st.markdown("""
-            This view aggregates model performance across all document folders,
-            helping identify which models perform best overall. Lower AI detection
-            scores and higher zero-shot success rates indicate better performance.
-            """)
-        
-        # Aggregate model performance across folders
-        model_perf = defaultdict(lambda: {
-            "doc": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0, 
-                    "zero_shot_gz": [], "zero_shot_sp": []},
-            "para": {"gz_deltas": [], "sp_deltas": [], "quality": [], "count": 0,
-                     "zero_shot_gz": [], "zero_shot_sp": []}
-        })
-        
-        for folder, models in detailed_stats.items():
-            for model, modes in models.items():
-                for mode, stats in modes.items():
-                    model_perf[model][mode]["gz_deltas"].append(stats["deltas"]["gptzero"])
-                    model_perf[model][mode]["sp_deltas"].append(stats["deltas"]["sapling"])
-                    model_perf[model][mode]["quality"].append(np.mean(list(stats["quality"].values())))
-                    model_perf[model][mode]["count"] += stats["draft_count"]
-                    model_perf[model][mode]["zero_shot_gz"].append(stats["zero_shot_success"]["gptzero"])
-                    model_perf[model][mode]["zero_shot_sp"].append(stats["zero_shot_success"]["sapling"])
-        
-        # Create summary table
-        rows = []
-        for model, modes in model_perf.items():
-            for mode in ["doc", "para"]:
-                if modes[mode]["count"] > 0:
-                    rows.append({
-                        "Model": model,
-                        "Mode": mode.title(),
-                        "Total Drafts": modes[mode]["count"],
-                        "Avg Δ GZ": np.mean(modes[mode]["gz_deltas"]),
-                        "Avg Δ SP": np.mean(modes[mode]["sp_deltas"]),
-                        "Zero-shot GZ": f"{np.mean(modes[mode]['zero_shot_gz']):.1f}%",
-                        "Zero-shot SP": f"{np.mean(modes[mode]['zero_shot_sp']):.1f}%",
-                        "Avg Quality": f"{np.mean(modes[mode]['quality']):.1f}%",
-                        "Folders": len(modes[mode]["gz_deltas"])
-                    })
-        
-        perf_df = pd.DataFrame(rows)
-        if not perf_df.empty:
-            # Style the dataframe
-            def style_delta(val):
-                if isinstance(val, (int, float)):
-                    if val < 0:
-                        return 'color: green; font-weight: bold'
-                    elif val > 0:
-                        return 'color: red; font-weight: bold'
-                return ''
-            
-            def style_zero_shot(val):
-                if isinstance(val, str) and val.endswith('%'):
-                    num_val = float(val.rstrip('%'))
-                    if num_val >= 80:
-                        return 'color: green; font-weight: bold'
-                    elif num_val >= 50:
-                        return 'color: orange'
-                    else:
-                        return 'color: red'
-                return ''
-            
-            styled_perf = perf_df.style.applymap(
-                style_delta, subset=['Avg Δ GZ', 'Avg Δ SP']
-            ).applymap(
-                style_zero_shot, subset=['Zero-shot GZ', 'Zero-shot SP']
-            ).format({
-                'Avg Δ GZ': '{:.3f}',
-                'Avg Δ SP': '{:.3f}'
-            })
-            st.dataframe(styled_perf, use_container_width=True, hide_index=True)
-            
-            # Best performers
-            st.markdown("### 🏆 Best Performers")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### Best AI Score Reduction")
-                st.caption("Models achieving the largest decrease in AI detection scores")
-                
-                # GPTZero
-                best_gz = perf_df.nsmallest(5, 'Avg Δ GZ')[['Model', 'Mode', 'Avg Δ GZ']]
-                st.markdown("**GPTZero:**")
-                st.dataframe(best_gz, use_container_width=True, hide_index=True)
-                
-                # Sapling
-                best_sp = perf_df.nsmallest(5, 'Avg Δ SP')[['Model', 'Mode', 'Avg Δ SP']]
-                st.markdown("**Sapling:**")
-                st.dataframe(best_sp, use_container_width=True, hide_index=True)
-            
-            with col2:
-                st.markdown("#### Best Zero-shot Success")
-                st.caption("Models with highest % of drafts scoring ≤10% AI detection")
-                
-                # GPTZero zero-shot
-                perf_df['ZS_GZ_numeric'] = perf_df['Zero-shot GZ'].str.rstrip('%').astype(float)
-                best_zs_gz = perf_df.nlargest(5, 'ZS_GZ_numeric')[['Model', 'Mode', 'Zero-shot GZ']]
-                st.markdown("**GPTZero Zero-shot:**")
-                st.dataframe(best_zs_gz, use_container_width=True, hide_index=True)
-                
-                # Sapling zero-shot
-                perf_df['ZS_SP_numeric'] = perf_df['Zero-shot SP'].str.rstrip('%').astype(float)
-                best_zs_sp = perf_df.nlargest(5, 'ZS_SP_numeric')[['Model', 'Mode', 'Zero-shot SP']]
-                st.markdown("**Sapling Zero-shot:**")
-                st.dataframe(best_zs_sp, use_container_width=True, hide_index=True)
+            st.markdown(
+                """
+                Compare humanizer models on different document sets.  
+                Lower **Δ GZ / Δ SP** values and higher **Zero-shot** rates are better.
+                """
+            )
+
+        folder_order = ["ai_texts", "human_texts", "mixed_texts"]
+        available_folders = [f for f in folder_order if f in detailed_stats]
+
+        sub_tabs = ["All Folders"] + [
+            f.replace("_", " ").title() for f in available_folders
+        ]
+        st_subtabs = st.tabs(sub_tabs)
+
+        # All folders combined
+        with st_subtabs[0]:
+            df_all = _compute_model_perf(detailed_stats)
+            _render_model_perf(df_all, title_suffix="– All Folders")
+
+        # per-folder
+        for idx, folder in enumerate(available_folders, start=1):
+            with st_subtabs[idx]:
+                pn = folder.replace("_", " ").title()
+                st.markdown(f"### 📂 {pn}")
+                df_folder = _compute_model_perf(detailed_stats, {folder})
+                _render_model_perf(df_folder, title_suffix=f"– {pn}")
+
     
     with tab3:
         st.subheader("📁 Performance Summary by Folder")
