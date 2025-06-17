@@ -16,7 +16,7 @@ from src.pages.utils import (
     GEMINI_FLAGS, ZERO_SHOT_THRESHOLD
 )
 
-from src.results_db import list_runs, load_run
+from src.results_db import list_runs, load_run, delete_run
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
