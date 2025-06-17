@@ -8,7 +8,7 @@ from typing import Dict, List
 
 import streamlit as st
 
-from src.pages.utils import log, show_log
+from src.pages.utils import log, show_log, natural_key
 from src.pipeline import run_test
 from src.results_db import save_run, load_run
 from src.models import MODEL_REGISTRY
@@ -88,7 +88,7 @@ def _gather_docs(selected: Dict[str, int], paths: Dict[str, str]) -> List[Path]:
     out: List[Path] = []
     for lbl, n in selected.items():
         folder = ROOT / paths[lbl]
-        out.extend(sorted(folder.glob("*.docx"))[: n])
+        out.extend(sorted(folder.glob("*.docx"), key=natural_key)[: n])
     return out
 
 
@@ -223,7 +223,7 @@ def page_new_run():
                 {"docs": results, "iterations": iterations, "doc_counts": doc_counts},
             )
             show_log(log_box)
-            status.update("Benchmark finished!", state="complete", expanded=False)
+            status.update(label="Benchmark finished!", state="complete", expanded=False)
 
         # ── summary ───────────────────────────────────────────────
         st.success(f"✅ Run **{run_name}** completed in {duration:.1f} minutes")

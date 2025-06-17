@@ -60,7 +60,7 @@ def _openai_call(text: str, model: str, api: OpenAI, system_prompt: str) -> str:
                 ],
                 temperature=1.0,
                 max_tokens=2048,
-                timeout=60,    # correct parameter name for OpenAI client
+                timeout=None,
             )
             return resp.choices[0].message.content.strip()
 

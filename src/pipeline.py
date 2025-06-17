@@ -96,7 +96,7 @@ def _call_with_timeout(fn, *args, timeout: int = 180, **kwargs):
     Run *fn* in a worker thread and raise RuntimeError if it takes
     longer than *timeout* seconds. Polls every second for interrupts.
     """
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wdog") as pool:
         fut = pool.submit(fn, *args, **kwargs)
         start = time.time()
         try:

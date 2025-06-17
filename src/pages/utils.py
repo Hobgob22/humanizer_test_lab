@@ -1,10 +1,12 @@
 # src/pages/utils.py - Shared utilities and helpers
 from __future__ import annotations
 
+import re
 import time
 import threading
 import math
 from typing import Dict, List, Any
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -247,3 +249,18 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                     use_container_width=True,
                     height=min(400, 50 + len(rows) * 35)  # Dynamic height based on rows
                 )
+
+
+_num = re.compile(r'(\d+)')
+
+def natural_key(p: Path | str):
+    """
+    Split the filename into text/number chunks so that              │
+    'AI_text_100.docx' > 'AI_text_11.docx' > 'AI_text_2.docx'.      │
+    Works with Path objects *or* plain strings.                     │
+    """
+    s = p.name if isinstance(p, Path) else p
+    return [int(tok) if tok.isdigit() else tok.lower()
+            for tok in _num.split(s)]
+
+

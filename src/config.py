@@ -37,8 +37,8 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 # 5 · THREAD / ASYNC CONCURRENCY CAPS  (env-overrideable)
 # ────────────────────────────────────────────────────────────────
 # User-specified limits: OpenAI~50/unlimited, Gemini/Detectors ~15 rpm
-HUMANIZER_MAX_WORKERS = 50   # OpenAI (doc mode)
-GEMINI_MAX_WORKERS    = 50   # ~15 req/min
+HUMANIZER_MAX_WORKERS = 30   # OpenAI (doc mode)
+GEMINI_MAX_WORKERS    = 30   # ~15 req/min
 DETECTOR_MAX_WORKERS  = 10   # ~15 req/min each
 
 # New: cap paragraph-level concurrency to keep threads in check

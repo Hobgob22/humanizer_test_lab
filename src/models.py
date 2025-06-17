@@ -16,10 +16,18 @@ MODEL_REGISTRY = {
     # ---- Gemini --------------------------------------------------------
     "gemini-2.0-flash":        {"provider": "gemini", "model": "gemini-2.0-flash",              "prompt_id": "default"},
     "gemini-2.0-flash-lite":   {"provider": "gemini", "model": "gemini-2.0-flash-lite",         "prompt_id": "default"},
-    "gemini-2.5-flash":        {"provider": "gemini", "model": "gemini-2.5-flash-preview-05-20","prompt_id": "default"},
+    "gemini-2.5-flash":        {"provider": "gemini", "model": "gemini-2.5-flash-preview-05-20", "prompt_id": "default"},
 
     # ---- our fine-tunes -----------------------------------------------
-    "gpt-4o-old-model":  {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2", "prompt_id": "finetuned"},
-    "gpt-4.1-new-model": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum30start:BcBvzILe",          "prompt_id": "finetuned"},
-    "gpt-4o-new-model":  {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw:BcCFkyvO",             "prompt_id": "finetuned"},
+    "gpt-4o-old-model":          {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",                              "prompt_id": "finetuned"},
+
+    # differentiated codenames for fine‑tunes created on 2024‑08‑06 and 2025‑04‑14
+    "gpt-4o-hum30raw":           {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw:BcCFkyvO",                                         "prompt_id": "finetuned"},
+    "gpt-4o-hum40naive":         {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum40-naive-auto:Bi0rO31o",                                    "prompt_id": "finetuned"},
+
+    "gpt-4.1-hum30start":        {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum30start:BcBvzILe",                                         "prompt_id": "finetuned"},
+    "gpt-4.1-hum40naive":        {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum40-naive-auto:Bi0wCXgi",                                    "prompt_id": "finetuned"},
+
+    "gpt-4.1-mini-hum40naive":   {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:hum40-naive-auto:Bi0qnqGa",                               "prompt_id": "finetuned"},
 }
+
