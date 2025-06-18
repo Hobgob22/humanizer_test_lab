@@ -1,4 +1,14 @@
+# src/pages/benchmark_analysis.py
 from __future__ import annotations
+
+###############################################################################
+#  Benchmark Analysis – extended metrics
+#  • Per-flag quality columns (length_ok, same_meaning, …)
+#  • Word-count-difference columns:
+#        – Within 10 words %   – Within 20 words %
+#        – % Longer            – % Shorter
+#  • Per-folder word-count-delta histogram + summary
+###############################################################################
 
 import time
 from collections import defaultdict
@@ -21,35 +31,38 @@ from src.pages.utils import (
 )
 from src.results_db import delete_run, list_runs, load_run
 
-# ─────────────────── project root ────────────────────
+# ────────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
 
-# ═════════════════════ utilities: analytics ════════════════════════════
+# ────────────────────────── helpers ─────────────────────────────────────
+_EXPECTED_FLAGS = (
+    "length_ok",
+    "same_meaning",
+    "same_lang",
+    "no_missing_info",
+    "citation_preserved",
+    "citation_content_ok",
+)
+
 
 def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
     """Yield ``(doc, draft)`` pairs for every draft in *docs*."""
     for doc in docs:
-        for d in doc.get("runs", []):
-            yield doc, d
+        for dr in doc.get("runs", []):
+            yield doc, dr
 
 
-# ---------------------------------------------------------------------
-# The big refactor below:  we **preserve raw hit counts** for zero‑shot so
-# later aggregations can be done without re‑deriving from rounded ratios.
-# ---------------------------------------------------------------------
-
+# ╔════════════════════════ analytics ══════════════════════════════════╗
 def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, Any]:
-    """Return nested dict  *folder → model → mode → stats*.
-
-    Each *stats* now contains **both**:
-      • ``zs_hits``  – dict with exact hit counts  {detector: int}
-      • ``zs_pct``   – dict with percentage floats  {detector: float}
+    """
+    Build nested dict  folder → model → mode → stats
+    and attach word-count-difference metrics + quality-flag rates.
     """
     stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
     )
 
-    # ── baselines per folder -----------------------------------------------
+    # ── baselines -------------------------------------------------------
     folder_baselines: DefaultDict[str, List[Dict]] = defaultdict(list)
     for doc in docs:
         if not doc.get("runs"):
@@ -77,55 +90,51 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         for f, bl in folder_baselines.items()
     }
 
-    # ── per‑draft collection -----------------------------------------------
-    for doc in docs:
+    # ── per-draft collection -------------------------------------------
+    for doc, dr in _iter_drafts(docs):
         folder = doc.get("folder", "unknown")
-        for draft in doc.get("runs", []):
-            if "scores_after" not in draft or "group_doc" not in draft["scores_after"]:
-                continue
-            model = draft.get("model", "unknown")
-            mode = draft.get("mode", "unknown")
+        if "scores_after" not in dr or "group_doc" not in dr["scores_after"]:
+            continue
+        model = dr.get("model", "unknown")
+        mode = dr.get("mode", "unknown")
 
-            bucket = stats[folder][model].setdefault(
-                mode,
-                {
-                    "after_scores": [],
-                    "wc_deltas": [],
-                    "quality_flags": defaultdict(list),
-                    "draft_count": 0,
-                    "mismatch_count": 0,
-                    "zs_hits": {"gptzero": 0, "sapling": 0},
-                },
-            )
+        bucket = stats[folder][model].setdefault(
+            mode,
+            {
+                "after_scores": [],
+                "wc_deltas": [],
+                "quality_flags": defaultdict(list),
+                "draft_count": 0,
+                "mismatch_count": 0,
+                "zs_hits": {"gptzero": 0, "sapling": 0},
+            },
+        )
 
-            # scores after humanization
-            gz_after = draft["scores_after"]["group_doc"].get("gptzero", 0)
-            sp_after = draft["scores_after"]["group_doc"].get("sapling", 0)
-            bucket["after_scores"].append({"gptzero": gz_after, "sapling": sp_after})
+        # detector scores
+        gz = dr["scores_after"]["group_doc"].get("gptzero", 0)
+        sp = dr["scores_after"]["group_doc"].get("sapling", 0)
+        bucket["after_scores"].append({"gptzero": gz, "sapling": sp})
+        if gz <= ZERO_SHOT_THRESHOLD:
+            bucket["zs_hits"]["gptzero"] += 1
+        if sp <= ZERO_SHOT_THRESHOLD:
+            bucket["zs_hits"]["sapling"] += 1
 
-            # zero‑shot hit counts (exact integers!)
-            if gz_after <= ZERO_SHOT_THRESHOLD:
-                bucket["zs_hits"]["gptzero"] += 1
-            if sp_after <= ZERO_SHOT_THRESHOLD:
-                bucket["zs_hits"]["sapling"] += 1
+        # word-count delta
+        delta_wc = dr.get("wordcount_after", 0) - dr.get("wordcount_before", 0)
+        bucket["wc_deltas"].append(delta_wc)
 
-            # word‑count delta
-            bucket["wc_deltas"].append(
-                draft.get("wordcount_after", 0) - draft.get("wordcount_before", 0)
-            )
+        # quality flags (skip drafts with paragraph mismatch)
+        if not dr.get("para_mismatch", False):
+            total = dr.get("para_count_before", 1)
+            for flag in _EXPECTED_FLAGS:
+                cnt = dr.get("flag_counts", {}).get(flag, 0)
+                bucket["quality_flags"][flag].append((cnt / total) * 100 if total else 0)
 
-            # quality flags
-            if not draft.get("para_mismatch", False):
-                for flag in GEMINI_FLAGS:
-                    cnt = draft.get("flag_counts", {}).get(flag, 0)
-                    total = draft.get("para_count_before", 1)
-                    bucket["quality_flags"][flag].append((cnt / total) * 100 if total else 0)
+        bucket["draft_count"] += 1
+        if dr.get("para_mismatch", False):
+            bucket["mismatch_count"] += 1
 
-            bucket["draft_count"] += 1
-            if draft.get("para_mismatch", False):
-                bucket["mismatch_count"] += 1
-
-    # ── aggregate per bucket -----------------------------------------------
+    # ── aggregate bucket data ------------------------------------------
     result: Dict[str, Any] = {}
     for folder, models in stats.items():
         baseline = folder_avg_baselines.get(folder, {"gptzero": 0.5, "sapling": 0.5})
@@ -139,9 +148,15 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 after_gz = np.mean([s["gptzero"] for s in data["after_scores"]])
                 after_sp = np.mean([s["sapling"] for s in data["after_scores"]])
 
-                # percentages with full precision, no rounding yet
-                zs_pct_gz = data["zs_hits"]["gptzero"] / data["draft_count"] * 100
-                zs_pct_sp = data["zs_hits"]["sapling"] / data["draft_count"] * 100
+                zs_gz_pct = data["zs_hits"]["gptzero"] / data["draft_count"] * 100
+                zs_sp_pct = data["zs_hits"]["sapling"] / data["draft_count"] * 100
+
+                # word-count diff metrics
+                deltas = np.array(data["wc_deltas"])
+                within10 = (np.abs(deltas) <= 10).mean() * 100
+                within20 = (np.abs(deltas) <= 20).mean() * 100
+                pct_longer = (deltas > 0).mean() * 100
+                pct_shorter = (deltas < 0).mean() * 100
 
                 result[folder][model][mode] = {
                     "baseline": baseline,
@@ -149,7 +164,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     "deltas": {
                         "gptzero": after_gz - baseline["gptzero"],
                         "sapling": after_sp - baseline["sapling"],
-                        "wordcount": np.mean(data["wc_deltas"]) if data["wc_deltas"] else 0,
+                        "wordcount": deltas.mean() if deltas.size else 0,
                     },
                     "quality": {
                         flag: np.mean(vals) if vals else 0
@@ -157,9 +172,15 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     },
                     "draft_count": data["draft_count"],
                     "mismatch_rate": data["mismatch_count"] / data["draft_count"] * 100,
-                    # keep both counts **and** pct
                     "zs_hits": data["zs_hits"],
-                    "zero_shot_success": {"gptzero": zs_pct_gz, "sapling": zs_pct_sp},
+                    "zero_shot_success": {"gptzero": zs_gz_pct, "sapling": zs_sp_pct},
+                    "wc_diff": {
+                        "within10": within10,
+                        "within20": within20,
+                        "pct_longer": pct_longer,
+                        "pct_shorter": pct_shorter,
+                    },
+                    "wc_deltas": data["wc_deltas"],  # for histograms
                 }
     return result
 
@@ -220,26 +241,71 @@ def _compute_model_perf(
     return pd.DataFrame(rows)
 
 
-# ── styling helpers remain unchanged ──────────────────────────────────
-
+# ╔═════════════════════ styling helpers ════════════════════════════════╗
 def _style_delta(v):
     if isinstance(v, (int, float)):
-        if v < 0:
-            return "color: green; font-weight: bold"
-        if v > 0:
-            return "color: red; font-weight: bold"
+        return "color: green; font-weight:bold" if v < 0 else "color: red; font-weight:bold" if v > 0 else ""
     return ""
 
 
 def _style_zs(v):
     if isinstance(v, str) and v.endswith("%"):
-        f = float(v.rstrip("%"))
+        f = float(v[:-1])
         if f >= 80:
-            return "color: green; font-weight: bold"
-        if 50 <= f < 80:
+            return "color: green; font-weight:bold"
+        if f >= 50:
             return "color: orange"
         return "color: red"
     return ""
+
+
+def _style_quality(v):
+    if isinstance(v, str) and v.endswith("%"):
+        f = float(v[:-1])
+        if f >= 90:
+            return "color: green"
+        if f >= 70:
+            return "color: orange"
+        return "color: red"
+    return ""
+
+# ╔════════════ word-count distribution plot ════════════════════════════╗
+def _plot_wordcount_distribution(detailed_stats: Dict[str, Any], folder: str) -> None:
+    """Histogram & summary of word-count deltas (per folder)."""
+    deltas = []
+    for model in detailed_stats[folder].values():
+        for mode_stats in model.values():
+            deltas.extend(mode_stats["wc_deltas"])
+    if not deltas:
+        st.info("No word-count data for this folder.")
+        return
+
+    arr = np.array(deltas)
+    summary = pd.DataFrame(
+        [
+            {
+                "Drafts": len(arr),
+                "Mean Δ": f"{arr.mean():+.1f}",
+                "Median Δ": f"{np.median(arr):+.1f}",
+                "Within 10 words %": f"{(np.abs(arr) <= 10).mean()*100:.1f}%",
+                "Within 20 words %": f"{(np.abs(arr) <= 20).mean()*100:.1f}%",
+                "% Longer": f"{(arr > 0).mean()*100:.1f}%",
+                "% Shorter": f"{(arr < 0).mean()*100:.1f}%",
+            }
+        ]
+    )
+    st.markdown("##### Word-count change summary")
+    st.dataframe(summary, hide_index=True, use_container_width=True)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    safe_hist(ax, deltas, bins=30, alpha=0.7)
+    ax.axvline(0, color="black", linewidth=0.8, label="No change")
+    ax.set_xlabel("Word-count Δ (after − before)")
+    ax.set_ylabel("Drafts")
+    ax.set_title(f"Word-count change distribution – {folder.replace('_',' ').title()}")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    st.pyplot(fig)
 
 
 def _render_model_perf(df: pd.DataFrame, title_suffix: str = "") -> None:
@@ -296,36 +362,53 @@ def _render_model_perf(df: pd.DataFrame, title_suffix: str = "") -> None:
         )
 
 
+# ╔════════════════ helper – folder table ══════════════════════════════╗
 def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.DataFrame:
-    """Create a comparison table for all models in a specific folder"""
+    """Detailed table (one folder)."""
     rows = []
-    
     if folder not in stats:
         return pd.DataFrame()
-    
+
     for model, modes in stats[folder].items():
-        for mode in ["doc", "para"]:
-            if mode in modes:
-                s = modes[mode]
-                rows.append({
-                    "Model": model,
-                    "Mode": mode.title(),
-                    "Drafts": s["draft_count"],
-                    "Baseline GZ": f"{s['baseline']['gptzero']:.3f}",
-                    "After GZ": f"{s['after']['gptzero']:.3f}",
-                    "Δ GZ": s['deltas']['gptzero'],
-                    "Zero-shot GZ": f"{s['zero_shot_success']['gptzero']:.1f}%",
-                    "Baseline SP": f"{s['baseline']['sapling']:.3f}",
-                    "After SP": f"{s['after']['sapling']:.3f}",
-                    "Δ SP": s['deltas']['sapling'],
-                    "Zero-shot SP": f"{s['zero_shot_success']['sapling']:.1f}%",
-                    "Avg WC Δ": f"{s['deltas']['wordcount']:+.0f}",
-                    "Quality %": f"{np.mean(list(s['quality'].values())):.1f}%",
-                    "Mismatch %": f"{s['mismatch_rate']:.1f}%"
-                })
-    
-    df = pd.DataFrame(rows)
-    return df
+        for mode in ("doc", "para"):
+            if mode not in modes:
+                continue
+            s = modes[mode]
+            row = {
+                "Model": model,
+                "Mode": mode.title(),
+                "Drafts": s["draft_count"],
+                "Baseline GZ": f"{s['baseline']['gptzero']:.3f}",
+                "After GZ": f"{s['after']['gptzero']:.3f}",
+                "Δ GZ": s["deltas"]["gptzero"],
+                "Zero-shot GZ": f"{s['zero_shot_success']['gptzero']:.1f}%",
+                "Baseline SP": f"{s['baseline']['sapling']:.3f}",
+                "After SP": f"{s['after']['sapling']:.3f}",
+                "Δ SP": s["deltas"]["sapling"],
+                "Zero-shot SP": f"{s['zero_shot_success']['sapling']:.1f}%",
+                "Avg WC Δ": f"{s['deltas']['wordcount']:+.0f}",
+                "Within 10 words %": f"{s['wc_diff']['within10']:.1f}%",
+                "Within 20 words %": f"{s['wc_diff']['within20']:.1f}%",
+                "% Longer": f"{s['wc_diff']['pct_longer']:.1f}%",
+                "% Shorter": f"{s['wc_diff']['pct_shorter']:.1f}%",
+                "Quality %": f"{np.mean(list(s['quality'].values())):.1f}%",
+                "Mismatch %": f"{s['mismatch_rate']:.1f}%",
+            }
+            # per-flag columns
+            for flag in _EXPECTED_FLAGS:
+                row[f"{flag.replace('_',' ').title()} %"] = f"{s['quality'].get(flag, 0):.1f}%"
+            rows.append(row)
+
+    # column order
+    qual_cols = [f"{f.replace('_',' ').title()} %" for f in _EXPECTED_FLAGS]
+    base_cols = [
+        "Model","Mode","Drafts",
+        "Baseline GZ","After GZ","Δ GZ","Zero-shot GZ",
+        "Baseline SP","After SP","Δ SP","Zero-shot SP",
+        "Avg WC Δ","Within 10 words %","Within 20 words %","% Longer","% Shorter",
+        "Quality %","Mismatch %",
+    ]
+    return pd.DataFrame(rows)[base_cols + qual_cols]
 
 # ═══════════════ RUN OVERVIEW & DOC PAGE (main) ═══════════════════════
 def page_runs() -> None:
@@ -401,207 +484,177 @@ def page_runs() -> None:
             "📄 Documents",
         ]
     )
-    
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Tab 1 – Detailed per-folder / model table + charts (+NEW wc histogram)
+    # ════════════════════════════════════════════════════════════════════════
     with tab1:
         st.subheader("🎯 Detailed Statistics by Folder, Model, and Mode")
-        
+
         with st.expander("ℹ️ Understanding the metrics", expanded=False):
-            st.markdown("""
-            **Key Metrics:**
-            - **Δ GZ/SP**: Change in AI detection score (negative = better)
-            - **Zero-shot**: % of drafts scoring ≤10% on AI detection
-            - **Quality %**: Average of all quality checks (meaning, citations, etc.)
-            - **Mismatch %**: Drafts where paragraph count changed
-            """)
-        
-        # Group folders by type
+            st.markdown(
+                """
+                **Key Metrics:**  
+                • **Δ GZ / Δ SP** – change in AI-detection score (negative = better)  
+                • **Zero-shot** – % drafts ≤ 10 % on detector  
+                • **Quality %** – average of all quality checks  
+                • **Within 10 / 20 words** – word-count distance from original  
+                • **% Longer / % Shorter** – drafts that grew / shrank  
+                • **Mismatch %** – paragraph-count mismatches
+                """
+            )
+
+        # Folder ordering
         folder_order = ["ai_texts", "human_texts", "mixed_texts"]
         available_folders = [f for f in folder_order if f in detailed_stats]
         other_folders = [f for f in detailed_stats if f not in folder_order]
         all_folders = available_folders + other_folders
         
+        # ── iterate folders ----------------------------------------------
         for folder in all_folders:
-            with st.expander(f"📁 **{folder.replace('_', ' ').title()}**", expanded=(folder == "ai_texts")):
-                if folder in detailed_stats:
-                    df = _create_model_comparison_table(detailed_stats, folder)
-                    if not df.empty:
-                        # Style the dataframe with color coding
-                        def style_delta(val):
-                            if isinstance(val, (int, float)):
-                                if val < 0:
-                                    return 'color: green'
-                                elif val > 0:
-                                    return 'color: red'
-                            return ''
-                        
-                        def style_zero_shot(val):
-                            if isinstance(val, str) and val.endswith('%'):
-                                num_val = float(val.rstrip('%'))
-                                if num_val >= 80:
-                                    return 'color: green; font-weight: bold'
-                                elif num_val >= 50:
-                                    return 'color: orange'
-                                else:
-                                    return 'color: red'
-                            return ''
-                        
-                        styled_df = df.style.applymap(
-                            style_delta, subset=['Δ GZ', 'Δ SP']
-                        ).applymap(
-                            style_zero_shot, subset=['Zero-shot GZ', 'Zero-shot SP']
-                        )
-                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                        
-                        # Visualizations for this folder
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("#### AI Detection Score Changes")
-                            st.caption("Shows how much the AI detection scores changed after humanization")
-                            
-                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
-                            
-                            models = df['Model'].unique()
-                            x = np.arange(len(models))
-                            width = 0.35
-                            
-                            # GPTZero changes
-                            for i, mode in enumerate(['Doc', 'Para']):
-                                mode_df = df[df['Mode'] == mode]
-                                deltas = [ mode_df[mode_df['Model']==m]['Δ GZ'].iloc[0]
-                                        if not mode_df[mode_df['Model']==m].empty else 0
-                                        for m in models ]
-                                
-                                is_para = (mode == 'Para')
-                                bars = ax1.bar(
-                                    x + (i-0.5)*width, deltas, width,
-                                    label=f'{mode} Mode',
-                                    facecolor='none' if is_para else None,
-                                    edgecolor='black' if is_para else None,
-                                    hatch='-' if is_para else None,
-                                    alpha=0.3 if is_para else 0.8,
-                                    linewidth=1 if is_para else 0
-                                )
-                                
-                                # fill color for Doc mode, and for Para use black‐edge hatch over colored face
-                                for bar, delta in zip(bars, deltas):
-                                    if is_para:
-                                        bar.set_facecolor('green' if delta < 0 else 'red')
-                                    else:
-                                        bar.set_color('green' if delta < 0 else 'red')
-                            
-                            ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                            ax1.set_xlabel('Model')
-                            ax1.set_ylabel('GPTZero Score Change')
-                            ax1.set_title(f'GPTZero Score Changes - {folder.replace("_", " ").title()}')
-                            ax1.set_xticks(x)
-                            ax1.set_xticklabels(models, rotation=45, ha='right')
-                            ax1.legend()
-                            ax1.grid(True, alpha=0.3)
-                            
-                            # Sapling changes
-                            for i, mode in enumerate(['Doc', 'Para']):
-                                mode_df = df[df['Mode'] == mode]
-                                deltas = [ mode_df[mode_df['Model']==m]['Δ SP'].iloc[0]
-                                        if not mode_df[mode_df['Model']==m].empty else 0
-                                        for m in models ]
-                                
-                                is_para = (mode == 'Para')
-                                bars = ax2.bar(
-                                    x + (i-0.5)*width, deltas, width,
-                                    label=f'{mode} Mode',
-                                    facecolor='none' if is_para else None,
-                                    edgecolor='black' if is_para else None,
-                                    hatch='-' if is_para else None,
-                                    alpha=0.3 if is_para else 0.8,
-                                    linewidth=1 if is_para else 0
-                                )
-                                
-                                for bar, delta in zip(bars, deltas):
-                                    if is_para:
-                                        bar.set_facecolor('green' if delta < 0 else 'red')
-                                    else:
-                                        bar.set_color('green' if delta < 0 else 'red')
-                            
-                            ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                            ax2.set_xlabel('Model')
-                            ax2.set_ylabel('Sapling Score Change')
-                            ax2.set_title(f'Sapling Score Changes - {folder.replace("_", " ").title()}')
-                            ax2.set_xticks(x)
-                            ax2.set_xticklabels(models, rotation=45, ha='right')
-                            ax2.legend()
-                            ax2.grid(True, alpha=0.3)
-                            
-                            plt.tight_layout()
-                            st.pyplot(fig)
+            with st.expander(
+                f"📁 **{folder.replace('_', ' ').title()}**",
+                expanded=(folder == "ai_texts"),
+            ):
+                if folder not in detailed_stats:
+                    st.info("No data for this folder.")
+                    continue
 
-                        
-                        with col2:
-                            st.markdown("#### Zero-shot Success & Quality")
-                            st.caption("Zero-shot: % of drafts with ≤10% AI score | Quality: content preservation")
-                            
-                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
-                            
-                            # Zero-shot success rates
-                            bar_width = 0.2
-                            x = np.arange(len(df['Model'].unique()))
-                            
-                            for i, (mode, detector) in enumerate([('Doc', 'GZ'), ('Doc', 'SP'), ('Para', 'GZ'), ('Para', 'SP')]):
-                                mode_df = df[df['Mode'] == mode.title()]
-                                col_name = f'Zero-shot {detector}'
-                                values = []
-                                for model in models:
-                                    model_data = mode_df[mode_df['Model'] == model]
-                                    if not model_data.empty:
-                                        val = float(model_data[col_name].iloc[0].rstrip('%'))
-                                        values.append(val)
-                                    else:
-                                        values.append(0)
-                                
-                                ax1.bar(x + (i-1.5)*bar_width, values, bar_width, 
-                                       label=f'{mode} {detector}', alpha=0.8)
-                            
-                            ax1.set_xlabel('Model')
-                            ax1.set_ylabel('Zero-shot Success Rate (%)')
-                            ax1.set_title(f'Zero-shot Success Rates - {folder.replace("_", " ").title()}')
-                            ax1.set_xticks(x)
-                            ax1.set_xticklabels(models, rotation=45, ha='right')
-                            ax1.legend()
-                            ax1.set_ylim(0, 100)
-                            ax1.grid(True, alpha=0.3)
-                            
-                            # Quality scores
-                            quality_data = []
-                            labels = []
-                            for _, row in df.iterrows():
-                                quality = float(row['Quality %'].rstrip('%'))
-                                quality_data.append(quality)
-                                labels.append(f"{row['Model']}\n({row['Mode']})")
-                            
-                            bars = ax2.bar(range(len(quality_data)), quality_data, alpha=0.8)
-                            
-                            # Color bars based on quality
-                            for bar, q in zip(bars, quality_data):
-                                if q >= 80:
-                                    bar.set_color('green')
-                                elif q >= 60:
-                                    bar.set_color('orange')
-                                else:
-                                    bar.set_color('red')
-                            
-                            ax2.set_xlabel('Model & Mode')
-                            ax2.set_ylabel('Average Quality Score (%)')
-                            ax2.set_title(f'Quality Scores - {folder.replace("_", " ").title()}')
-                            ax2.set_xticks(range(len(labels)))
-                            ax2.set_xticklabels(labels, rotation=45, ha='right')
-                            ax2.set_ylim(0, 100)
-                            ax2.grid(True, alpha=0.3)
-                            
-                            plt.tight_layout()
-                            st.pyplot(fig)
-                else:
-                    st.info("No data for this folder")
-    
+                df = _create_model_comparison_table(detailed_stats, folder)
+                if df.empty:
+                    st.info("No drafts for this folder.")
+                    continue
+
+                # Style dataframe incl. new columns
+                qual_cols = [c for c in df.columns if c.endswith(" %") and c not in
+                             ("Zero-shot GZ","Zero-shot SP","Quality %","Mismatch %")]
+                styled_df = (
+                    df.style.applymap(_style_delta, subset=["Δ GZ", "Δ SP"])
+                    .applymap(_style_zs, subset=["Zero-shot GZ", "Zero-shot SP"])
+                    .applymap(_style_quality, subset=qual_cols + ["Quality %"])
+                    .format({"Δ GZ": "{:+.3f}", "Δ SP": "{:+.3f}"})
+                )
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+                # ── side-by-side charts ---------------------------------
+                col1, col2 = st.columns(2)
+
+                # 1️⃣ AI-detector Δ-score bars (unchanged)
+                with col1:
+                    st.markdown("#### AI-detector score changes")
+                    st.caption("Negative bars = improvement")
+
+                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+                    models = df["Model"].unique()
+                    x = np.arange(len(models))
+                    width = 0.35
+
+                    for i, mode in enumerate(["Doc", "Para"]):
+                        mdf = df[df["Mode"] == mode]
+                        deltas_gz = [
+                            mdf[mdf["Model"] == m]["Δ GZ"].iloc[0] if not mdf[mdf["Model"] == m].empty else 0
+                            for m in models
+                        ]
+                        deltas_sp = [
+                            mdf[mdf["Model"] == m]["Δ SP"].iloc[0] if not mdf[mdf["Model"] == m].empty else 0
+                            for m in models
+                        ]
+                        shift = x + (i - 0.5) * width
+                        ax1.bar(
+                            shift,
+                            deltas_gz,
+                            width,
+                            label=f"{mode}",
+                            color=["green" if v < 0 else "red" for v in deltas_gz],
+                            alpha=0.8 if mode == "Doc" else 0.3,
+                            hatch="-" if mode == "Para" else None,
+                            edgecolor="black" if mode == "Para" else None,
+                        )
+                        ax2.bar(
+                            shift,
+                            deltas_sp,
+                            width,
+                            label=f"{mode}",
+                            color=["green" if v < 0 else "red" for v in deltas_sp],
+                            alpha=0.8 if mode == "Doc" else 0.3,
+                            hatch="-" if mode == "Para" else None,
+                            edgecolor="black" if mode == "Para" else None,
+                        )
+
+                    for ax, title, ylabel in (
+                        (ax1, "Δ GPTZero", "Δ Score"),
+                        (ax2, "Δ Sapling", "Δ Score"),
+                    ):
+                        ax.axhline(0, color="black", linewidth=0.8)
+                        ax.set_xticks(x)
+                        ax.set_xticklabels(models, rotation=45, ha="right")
+                        ax.set_title(title)
+                        ax.set_ylabel(ylabel)
+                        ax.grid(True, alpha=0.3)
+                        ax.legend()
+
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                # 2️⃣ Zero-shot & quality bars (unchanged)
+                with col2:
+                    st.markdown("#### Zero-shot success & quality")
+                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+
+                    # zero-shot
+                    bar_w = 0.2
+                    models = df["Model"].unique()
+                    x = np.arange(len(models))
+                    combos = [("Doc", "GZ"), ("Doc", "SP"), ("Para", "GZ"), ("Para", "SP")]
+
+                    for i, (mode, det) in enumerate(combos):
+                        mdf = df[df["Mode"] == mode]
+                        vals = [
+                            float(
+                                mdf[mdf["Model"] == m][f"Zero-shot {det}"].str.rstrip("%").iloc[0]
+                            )
+                            if not mdf[mdf["Model"] == m].empty
+                            else 0
+                            for m in models
+                        ]
+                        ax1.bar(
+                            x + (i - 1.5) * bar_w,
+                            vals,
+                            bar_w,
+                            label=f"{mode} {det}",
+                            alpha=0.8,
+                        )
+
+                    ax1.set_ylim(0, 100)
+                    ax1.set_xticks(x)
+                    ax1.set_xticklabels(models, rotation=45, ha="right")
+                    ax1.set_ylabel("%")
+                    ax1.set_title("Zero-shot success")
+                    ax1.legend(fontsize="small")
+                    ax1.grid(True, alpha=0.3)
+
+                    # quality
+                    qualities = [
+                        float(df[df["Model"] == m]["Quality %"].iloc[0].rstrip("%"))
+                        for m in models
+                    ]
+                    ax2.bar(
+                        x,
+                        qualities,
+                        0.4,
+                        color=["green" if q >= 80 else "orange" if q >= 60 else "red" for q in qualities],
+                    )
+                    ax2.set_ylim(0, 100)
+                    ax2.set_xticks(x)
+                    ax2.set_xticklabels(models, rotation=45, ha="right")
+                    ax2.set_ylabel("%")
+                    ax2.set_title("Average quality")
+                    ax2.grid(True, alpha=0.3)
+
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+
     with tab2:
         st.subheader("📈 Model Performance")
         with st.expander("ℹ️ About this view", expanded=False):
@@ -794,121 +847,117 @@ def page_runs() -> None:
     
     with tab4:
         st.subheader("📊 Score Distributions")
-        
-        with st.expander("ℹ️ Understanding distributions", expanded=False):
-            st.markdown("""
-            These histograms show the spread of AI detection scores after humanization.
-            - **Red line**: Average baseline score (before humanization)
-            - **Bars**: Distribution of scores after humanization
-            - **Left is better**: Lower scores indicate better humanization
-            """)
 
-        # Build lookup dict
-        by_model_mode_folder = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"gz": [], "sp": []})))
-        
-        # Also calculate folder baselines
+        with st.expander("ℹ️ How to read these charts", expanded=False):
+            st.markdown(
+                """
+                *Upper charts* – overall distribution for each **folder**  
+                *Lower charts* – separate distribution for **each model / mode**  
+                A red dashed line shows the *baseline* detector score before humanisation.
+                """
+            )
+
+        # ── collect data ─────────────────────────────────────────────
+        by_model_mode_folder = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: {"gz": [], "sp": []}))
+        )
         folder_baselines = defaultdict(lambda: {"gz": [], "sp": []})
+
         for doc in docs:
             folder = doc.get("folder", "unknown")
-            runs = doc.get("runs", [])
-            if runs and len(runs) > 0:
-                # Get baseline from first run (all runs have same baseline)
-                first_run = runs[0]
-                if "scores_before" in first_run and "group_doc" in first_run["scores_before"]:
-                    baseline_gz = first_run["scores_before"]["group_doc"]["gptzero"]
-                    baseline_sp = first_run["scores_before"]["group_doc"]["sapling"]
-                    folder_baselines[folder]["gz"].append(baseline_gz)
-                    folder_baselines[folder]["sp"].append(baseline_sp)
-                
-                for draft in runs:
-                    if "scores_after" in draft and "group_doc" in draft["scores_after"]:
-                        gz_score = draft["scores_after"]["group_doc"].get("gptzero", 0)
-                        sp_score = draft["scores_after"]["group_doc"].get("sapling", 0)
-                        model = draft.get("model", "unknown")
-                        mode = draft.get("mode", "unknown")
-                        by_model_mode_folder[folder][model][mode]["gz"].append(gz_score)
-                        by_model_mode_folder[folder][model][mode]["sp"].append(sp_score)
+            runs   = doc.get("runs", [])
+            if not runs:
+                continue
 
-        # Create distribution plots by folder
+            first = runs[0]
+            if "scores_before" in first and "group_doc" in first["scores_before"]:
+                folder_baselines[folder]["gz"].append(first["scores_before"]["group_doc"]["gptzero"])
+                folder_baselines[folder]["sp"].append(first["scores_before"]["group_doc"]["sapling"])
+
+            for dr in runs:
+                if "scores_after" not in dr or "group_doc" not in dr["scores_after"]:
+                    continue
+                model = dr.get("model", "unknown")
+                mode  = dr.get("mode",  "unknown")
+                by_model_mode_folder[folder][model][mode]["gz"].append(
+                    dr["scores_after"]["group_doc"]["gptzero"]
+                )
+                by_model_mode_folder[folder][model][mode]["sp"].append(
+                    dr["scores_after"]["group_doc"]["sapling"]
+                )
+
+        # ── plotting ─────────────────────────────────────────────────
         for folder in ["ai_texts", "human_texts", "mixed_texts"]:
-            if folder in by_model_mode_folder:
-                st.markdown(f"### 📁 {folder.replace('_', ' ').title()}")
-                
-                # GPTZero distributions
-                st.markdown("#### GPTZero Score Distributions")
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                
-                # Get average baseline for this folder
-                if folder in folder_baselines and folder_baselines[folder]["gz"]:
-                    avg_baseline_gz = np.mean(folder_baselines[folder]["gz"])
-                    ax1.axvline(avg_baseline_gz, color="red", linestyle="--", 
-                               label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
-                    ax2.axvline(avg_baseline_gz, color="red", linestyle="--", 
-                               label=f"Baseline (avg: {avg_baseline_gz:.3f})", alpha=0.7)
-                
-                # Doc mode distributions
+            if folder not in by_model_mode_folder:
+                continue
+
+            st.markdown(f"### 📁 {folder.replace('_', ' ').title()}")
+            base_gz = np.mean(folder_baselines[folder]["gz"]) if folder_baselines[folder]["gz"] else None
+            base_sp = np.mean(folder_baselines[folder]["sp"]) if folder_baselines[folder]["sp"] else None
+
+            # ----------  A. folder-level distributions  ----------
+            with st.expander("Overall distribution charts", expanded=False):
+                for detector in ("gz", "sp"):
+                    fig, (ax_doc, ax_para) = plt.subplots(1, 2, figsize=(12, 4))
+                    for model, modes in by_model_mode_folder[folder].items():
+                        if modes["doc"][detector]:
+                            safe_hist(ax_doc, modes["doc"][detector], bins=20, alpha=0.4, label=model)
+                        if modes["para"][detector]:
+                            safe_hist(ax_para, modes["para"][detector], bins=20, alpha=0.4, label=model)
+
+                    bl = base_gz if detector == "gz" else base_sp
+                    if bl is not None:
+                        for ax in (ax_doc, ax_para):
+                            ax.axvline(bl, color="red", linestyle="--", alpha=0.7, label=f"Baseline {bl:.3f}")
+
+                    title = "GPTZero" if detector == "gz" else "Sapling"
+                    ax_doc.set_title(f"{title} – Document mode")
+                    ax_para.set_title(f"{title} – Paragraph mode")
+                    for ax in (ax_doc, ax_para):
+                        ax.set_xlabel("Score")
+                        ax.set_ylabel("Drafts")
+                        ax.grid(True, alpha=0.3)
+                    ax_doc.legend(fontsize="small")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+            # ----------  B. per-model-per-mode distributions ----------
+            with st.expander("Per-model / mode distribution charts", expanded=False):
                 for model, modes in by_model_mode_folder[folder].items():
-                    if "doc" in modes and modes["doc"]["gz"]:
-                        safe_hist(ax1, modes["doc"]["gz"], bins=20, alpha=0.5, label=model)
+                    for mode_key in ("doc", "para"):
+                        scores_gz = modes[mode_key]["gz"]
+                        scores_sp = modes[mode_key]["sp"]
+                        if not scores_gz and not scores_sp:
+                            continue
+
+                        st.markdown(f"**{model}** – {mode_key.title()} mode")
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+                        # GPTZero
+                        if scores_gz:
+                            safe_hist(ax1, scores_gz, bins=20, alpha=0.7)
+                        if base_gz is not None:
+                            ax1.axvline(base_gz, color="red", linestyle="--", alpha=0.7, label=f"Baseline {base_gz:.3f}")
+                        ax1.set_xlabel("GPTZero Score")
+                        ax1.set_ylabel("Drafts")
+                        ax1.grid(True, alpha=0.3)
+                        ax1.legend()
+
+                        # Sapling
+                        if scores_sp:
+                            safe_hist(ax2, scores_sp, bins=20, alpha=0.7)
+                        if base_sp is not None:
+                            ax2.axvline(base_sp, color="red", linestyle="--", alpha=0.7, label=f"Baseline {base_sp:.3f}")
+                        ax2.set_xlabel("Sapling Score")
+                        ax2.set_ylabel("Drafts")
+                        ax2.grid(True, alpha=0.3)
+                        ax2.legend()
+
+                        plt.tight_layout()
+                        st.pyplot(fig)
+
+            st.divider()
                 
-                ax1.set_title(f"Document Mode - {folder.replace('_', ' ').title()}")
-                ax1.set_xlabel("GPTZero Score")
-                ax1.set_ylabel("Frequency")
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                
-                # Para mode distributions
-                for model, modes in by_model_mode_folder[folder].items():
-                    if "para" in modes and modes["para"]["gz"]:
-                        safe_hist(ax2, modes["para"]["gz"], bins=20, alpha=0.5, label=model)
-                
-                ax2.set_title(f"Paragraph Mode - {folder.replace('_', ' ').title()}")
-                ax2.set_xlabel("GPTZero Score")
-                ax2.set_ylabel("Frequency")
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                
-                # Sapling distributions
-                st.markdown("#### Sapling Score Distributions")
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                
-                # Get average baseline for this folder
-                if folder in folder_baselines and folder_baselines[folder]["sp"]:
-                    avg_baseline_sp = np.mean(folder_baselines[folder]["sp"])
-                    ax1.axvline(avg_baseline_sp, color="red", linestyle="--", 
-                               label=f"Baseline (avg: {avg_baseline_sp:.3f})", alpha=0.7)
-                    ax2.axvline(avg_baseline_sp, color="red", linestyle="--", 
-                               label=f"Baseline (avg: {avg_baseline_sp:.3f})", alpha=0.7)
-                
-                # Doc mode distributions
-                for model, modes in by_model_mode_folder[folder].items():
-                    if "doc" in modes and modes["doc"]["sp"]:
-                        safe_hist(ax1, modes["doc"]["sp"], bins=20, alpha=0.5, label=model)
-                
-                ax1.set_title(f"Document Mode - {folder.replace('_', ' ').title()}")
-                ax1.set_xlabel("Sapling Score")
-                ax1.set_ylabel("Frequency")
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                
-                # Para mode distributions
-                for model, modes in by_model_mode_folder[folder].items():
-                    if "para" in modes and modes["para"]["sp"]:
-                        safe_hist(ax2, modes["para"]["sp"], bins=20, alpha=0.5, label=model)
-                
-                ax2.set_title(f"Paragraph Mode - {folder.replace('_', ' ').title()}")
-                ax2.set_xlabel("Sapling Score")
-                ax2.set_ylabel("Frequency")
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                st.divider()
-    
     with tab5:
         st.subheader("📄 Document List")
         
