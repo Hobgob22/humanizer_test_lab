@@ -8,7 +8,12 @@ and safe to import in threaded environments (e.g. Streamlit).
   - Document & paragraph humanizations run in parallel
   - Detector checks (GPTZero + Sapling) run concurrently
   - Gemini quality checks run concurrently
-• Respects rate limits for Gemini (14/min) and detectors (14/min each)
+• Respects rate limits:
+  - Gemini: 700 req/min (shared between humanizer and quality)
+  - GPTZero: 500 req/min
+  - Sapling: 120,000 chars/2min
+  - Claude: 700 req/min
+  - OpenAI: 1500 req/min
 • Live logging shows progress at each stage
 • Single Ctrl+C aborts immediately (when run in the true main thread)
 """
@@ -189,16 +194,63 @@ def _detect_both(text: str, paras: List[str], *, skip_cache: bool, log=None):
 def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=None):
     uniq = {_hash(t): (t, p) for t, p in texts_paras}
     baseline_hash = _hash(texts_paras[0][0])  # first entry == original document
+    baseline_text, baseline_paras = texts_paras[0]
 
     doc_scores_gz, doc_scores_sp = {}, {}
     para_scores_gz, para_scores_sp = {}, {}
 
-    _stage(f"Detector scoring phase • {len(uniq)} unique texts", log)
+    # Check if baseline is already cached
+    baseline_cached = False
+    if baseline_hash in uniq:
+        # Try to get cached scores for the original document
+        cached_gz = gptzero.get("gptzero", baseline_text)
+        cached_sp = sapling.get("sapling", baseline_text)
+        
+        if cached_gz is not None and cached_sp is not None:
+            # Extract scores directly from cache without API calls
+            _maybe_log("Original document: ✨ using cached scores (no API calls)", log)
+            
+            # Extract GPTZero scores from cache
+            doc_scores_gz[baseline_hash] = cached_gz["documents"][0]["completely_generated_prob"]
+            para_raw = cached_gz["documents"][0].get("paragraphs") or []
+            if len(para_raw) == len(baseline_paras):
+                gz_para_scores = [p["completely_generated_prob"] for p in para_raw]
+            else:
+                gz_para_scores = [doc_scores_gz[baseline_hash]] * len(baseline_paras)
+            
+            # Extract Sapling scores from cache
+            doc_scores_sp[baseline_hash] = cached_sp["score"]
+            sent_scores = [s["score"] for s in cached_sp.get("sentence_scores", [])]
+            sp_para_scores, idx = [], 0
+            for para in baseline_paras:
+                n_sent = len(_split_sentences(para))
+                if idx + n_sent <= len(sent_scores):
+                    chunk = sent_scores[idx:idx+n_sent]
+                    idx += n_sent
+                    sp_para_scores.append(sum(chunk)/len(chunk))
+                else:
+                    sp_para_scores.append(doc_scores_sp[baseline_hash])
+            
+            # Update paragraph scores
+            para_scores_gz.update({_hash(pt): s for pt, s in zip(baseline_paras, gz_para_scores)})
+            para_scores_sp.update({_hash(pt): s for pt, s in zip(baseline_paras, sp_para_scores)})
+            
+            baseline_cached = True
+            # Remove baseline from work queue
+            uniq.pop(baseline_hash, None)
+
+    # Count only new texts that need scoring
+    new_texts_count = len(uniq)
+    if new_texts_count == 0:
+        _stage("✓ Detector scoring complete (all cached)", log)
+        return doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp
+
+    _stage(f"Detector scoring phase • {new_texts_count} new texts to score", log)
 
     with _fast_pool(max_workers=DETECTOR_MAX_WORKERS) as pool:
         fut2h = {}
         for h, (t, p) in uniq.items():
-            skip_cache = h != baseline_hash  # only originals may touch cache
+            skip_cache = True  # All remaining texts are new drafts, skip cache
             fut = pool.submit(_detect_both, t, p, skip_cache=skip_cache, log=log)
             fut2h[fut] = h
 
@@ -212,7 +264,7 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
             doc_scores_sp[h] = res["s_doc"]
             para_scores_gz.update({_hash(pt): s for pt, s in zip(p, res["g_par"])})
             para_scores_sp.update({_hash(pt): s for pt, s in zip(p, res["s_par"])})
-            _maybe_log(f"Detector progress: {completed}/{len(uniq)}", log)
+            _maybe_log(f"Detector progress: {completed}/{new_texts_count}", log)
 
     _stage("✓ Detector scoring complete", log)
     return doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp
@@ -250,7 +302,8 @@ def _batch_quality_check(pairs: List[Tuple[str, str]], log=None):
 def _humanize_doc(text: str, model: str, log=None) -> str:
     _stage(f"Doc humanization START • {model}", log)
     start_time = time.time()
-    out = _call_with_timeout(humanize, text, model, "doc", timeout=300, log=log)
+    # No timeout wrapper needed - humanizer has its own timeout and rate limiting
+    out = humanize(text, model, "doc", log=log)
     elapsed = time.time() - start_time
     _stage(f"Doc humanization DONE • {model} • {elapsed:.1f}s", log)
     return out

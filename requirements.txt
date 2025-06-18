@@ -11,4 +11,5 @@ python-dotenv>=1.0
 openai>=1.23
 google-generativeai>=0.5.4  # Gemini Flash
 google-genai>=0.1.0         # new Google Gen AI SDK replacing google-generativeai
+anthropic>=0.39.0
 sqlalchemy>=2.0

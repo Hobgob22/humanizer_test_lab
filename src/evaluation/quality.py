@@ -1,9 +1,10 @@
 """
 Paragraph-quality checker with Gemini semantic validation.
 
-v3.1 - Fixed structured output with proper Gemini schema format with new google-genai SDK
+v3.2 - System instructions properly implemented
 ────
-• Uses correct google-genai Schema and GenerateContentConfig
+• Uses system_instruction in GenerateContentConfig
+• Maintains all existing functionality
 • Improved error handling and debugging
 • Maintains rate limiting and retry logic
 """
@@ -45,16 +46,16 @@ QUALITY_SCHEMA = types.Schema(
 )
 
 
-def _gemini_generate(model_id: str, prompt: str, text_pair: str, *, max_retries: int = 10):
+def _gemini_generate(model_id: str, system_prompt: str, text_pair: str, *, max_retries: int = 10):
     """
     Helper to invoke Gemini with structured output, rate-limiting, and retry logic.
+    Rate limit: 700 requests/minute (shared with humanizer)
     """
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY is not configured")
 
     print(f"[quality._gemini_generate] Starting with model_id={model_id}")
-    full_prompt = f"{prompt}\n\n{text_pair}"
-    delay = 60
+    delay = 5  # Start with smaller delay since we have higher rate limit
 
     for attempt in range(1, max_retries + 1):
         print(f"[quality._gemini_generate] Attempt {attempt}/{max_retries}")
@@ -64,7 +65,7 @@ def _gemini_generate(model_id: str, prompt: str, text_pair: str, *, max_retries:
             contents = [
                 types.Content(
                     role="user",
-                    parts=[types.Part.from_text(text=full_prompt)],
+                    parts=[types.Part.from_text(text=text_pair)],
                 )
             ]
             resp = client.models.generate_content(
@@ -74,6 +75,7 @@ def _gemini_generate(model_id: str, prompt: str, text_pair: str, *, max_retries:
                     temperature=0.0,
                     response_mime_type="application/json",
                     response_schema=QUALITY_SCHEMA,
+                    system_instruction=system_prompt,  # System prompt properly set
                 ),
             )
             print(f"[quality._gemini_generate] Success on attempt {attempt}")
@@ -93,7 +95,7 @@ def _gemini_generate(model_id: str, prompt: str, text_pair: str, *, max_retries:
                 backoff = delay + random.uniform(0, 2)
                 print(f"[quality._gemini_generate] Rate limit hit – waiting {backoff:.1f}s")
                 time.sleep(backoff)
-                delay = min(delay * 1.5, 300)
+                delay = min(delay * 1.5, 60)  # Cap at 60s since we have higher rate limit
                 continue
 
             # Non-retriable or out of retries

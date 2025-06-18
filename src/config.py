@@ -24,6 +24,7 @@ HUMANIZER_OPENAI_API_KEY  = os.getenv("HUMANIZER_OPENAI_API_KEY", "")
 GPTZERO_API_KEY           = os.getenv("GPTZERO_API_KEY", "")
 SAPLING_API_KEY           = os.getenv("SAPLING_API_KEY", "")
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY", "")
+CLAUDE_API_KEY            = os.getenv("CLAUDE_API_KEY", "")
 
 # ────────────────────────────────────────────────────────────────
 # 4 · GENERAL TUNABLES
@@ -36,10 +37,16 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 # ────────────────────────────────────────────────────────────────
 # 5 · THREAD / ASYNC CONCURRENCY CAPS  (env-overrideable)
 # ────────────────────────────────────────────────────────────────
-# User-specified limits: OpenAI~50/unlimited, Gemini/Detectors ~15 rpm
-HUMANIZER_MAX_WORKERS = 30   # OpenAI (doc mode)
-GEMINI_MAX_WORKERS    = 30   # ~15 req/min
-DETECTOR_MAX_WORKERS  = 10   # ~15 req/min each
+# Adjusted based on new rate limits:
+# - OpenAI: 1500 req/min (25 req/sec) 
+# - Claude: 700 req/min (11.6 req/sec)
+# - Gemini: 700 req/min (11.6 req/sec)
+# - GPTZero: 500 req/min (8.3 req/sec)
+# - Sapling: character-based, not request-based
 
-# New: cap paragraph-level concurrency to keep threads in check
-PARA_MAX_WORKERS      = 8
+HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 50))   # Can handle mixed providers
+GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 50))      # 700 req/min
+DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 50))    # Mixed detectors
+
+# Cap paragraph-level concurrency
+PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 16))
