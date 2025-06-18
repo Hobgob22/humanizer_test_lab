@@ -107,8 +107,11 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 "draft_count": 0,
                 "mismatch_count": 0,
                 "zs_hits": {"gptzero": 0, "sapling": 0},
+                # NEW – keep raw series for the nerd-stats tab
+                "series": defaultdict(list),
             },
         )
+
 
         # detector scores
         gz = dr["scores_after"]["group_doc"].get("gptzero", 0)
@@ -122,6 +125,21 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         # word-count delta
         delta_wc = dr.get("wordcount_after", 0) - dr.get("wordcount_before", 0)
         bucket["wc_deltas"].append(delta_wc)
+
+        # ── NEW: store raw series for extended-stats tab ──────────────────────
+        bucket["series"]["after_gz"].append(gz)
+        bucket["series"]["after_sp"].append(sp)
+        bucket["series"]["wc"].append(delta_wc)
+        if not dr.get("para_mismatch", False):
+            total = dr.get("para_count_before", 1)
+            qual_pct = (
+                sum(dr.get("flag_counts", {}).get(f, 0) for f in _EXPECTED_FLAGS)
+                / (total * len(_EXPECTED_FLAGS))
+                * 100
+                if total
+                else 0
+            )
+            bucket["series"]["quality"].append(qual_pct)
 
         # quality flags (skip drafts with paragraph mismatch)
         if not dr.get("para_mismatch", False):
@@ -180,7 +198,8 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                         "pct_longer": pct_longer,
                         "pct_shorter": pct_shorter,
                     },
-                    "wc_deltas": data["wc_deltas"],  # for histograms
+                    "wc_deltas": data["wc_deltas"],      # for histograms
+                    "series": data["series"],             # 🔑 keep raw numbers
                 }
     return result
 
@@ -238,6 +257,48 @@ def _compute_model_perf(
                     "Folders": len(m["folders"]),
                 }
             )
+    return pd.DataFrame(rows)
+
+
+# ╔═══════════════════ extended-stats helpers ═══════════════════════════╗
+def _describe(arr):
+    """Return min, 25-perc, median, mean, 75-perc, max for *arr* (list-like)."""
+    if not arr:
+        return {"Min": 0, "P25": 0, "Median": 0, "Mean": 0, "P75": 0, "Max": 0}
+    a = np.asarray(arr)
+    return {
+        "Min":    float(np.min(a)),
+        "P25":    float(np.percentile(a, 25)),
+        "Median": float(np.median(a)),
+        "Mean":   float(np.mean(a)),
+        "P75":    float(np.percentile(a, 75)),
+        "Max":    float(np.max(a)),
+    }
+
+
+def _build_extended_stats(stats):
+    """
+    Build DataFrame with descriptive statistics for
+    GPTZero, Sapling, word-count Δ and quality %.
+    """
+    rows = []
+    for folder, models in stats.items():
+        for model, modes in models.items():
+            for mode, s in modes.items():
+                ser = s.get("series", {})
+                if not ser:
+                    continue
+                rows.append(
+                    {
+                        "Folder": folder,
+                        "Model":  model,
+                        "Mode":   mode.title(),
+                        **{f"GPTZero {k}": v for k, v in _describe(ser.get("after_gz", [])).items()},
+                        **{f"Sapling {k}": v for k, v in _describe(ser.get("after_sp", [])).items()},
+                        **{f"WC Δ {k}":  v for k, v in _describe(ser.get("wc", [])).items()},
+                        **{f"Quality {k}": v for k, v in _describe(ser.get("quality", [])).items()},
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -475,10 +536,11 @@ def page_runs() -> None:
     detailed_stats = _aggregate_statistics_by_model_mode_folder(docs)
 
     # --- main tabs ------------------------------------------------------------
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "📊 By Folder & Model",
             "📈 Model Performance",
+            "📐 Extended Stats",
             "📁 Folder Summary",
             "📊 Distributions",
             "📄 Documents",
@@ -688,8 +750,16 @@ def page_runs() -> None:
 
     
     with tab3:
-        st.subheader("📁 Performance Summary by Folder")
-        
+        st.subheader("📐 Extended Statistics")
+        st.caption("Min, 25-percentile, median, mean, 75-percentile and max for each metric.")
+        ext_df = _build_extended_stats(detailed_stats)
+        if ext_df.empty:
+            st.info("No data available for extended statistics.")
+        else:
+            st.dataframe(ext_df, use_container_width=True, hide_index=True)
+
+    with tab4:
+        st.subheader("📁 Performance Summary by Folder")        
         with st.expander("ℹ️ About folder types", expanded=False):
             st.markdown("""
             - **AI texts**: Documents originally generated by AI
@@ -845,7 +915,7 @@ def page_runs() -> None:
             plt.tight_layout()
             st.pyplot(fig)
     
-    with tab4:
+    with tab5:
         st.subheader("📊 Score & Word-count Distributions")
 
         with st.expander("ℹ️ How to read these charts", expanded=False):
@@ -984,7 +1054,7 @@ def page_runs() -> None:
 
             st.divider()
                 
-    with tab5:
+    with tab6:
         st.subheader("📄 Document List")
         
         with st.expander("ℹ️ About documents", expanded=False):
