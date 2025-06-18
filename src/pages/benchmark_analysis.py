@@ -846,20 +846,22 @@ def page_runs() -> None:
             st.pyplot(fig)
     
     with tab4:
-        st.subheader("📊 Score Distributions")
+        st.subheader("📊 Score & Word-count Distributions")
 
         with st.expander("ℹ️ How to read these charts", expanded=False):
             st.markdown(
                 """
-                *Upper charts* – overall distribution for each **folder**  
-                *Lower charts* – separate distribution for **each model / mode**  
-                A red dashed line shows the *baseline* detector score before humanisation.
+                • **Overall charts** — distribution of *all* drafts in the folder  
+                • **Per-model / mode charts** — one histogram per model for *Doc* and *Para* mode  
+                • **Word-count Δ charts** — histogram of the change in word-count (after − before)  
+                Red dashed vertical line = average baseline detector score.  
+                Black solid vertical line = no word-count change.
                 """
             )
 
         # ── collect data ─────────────────────────────────────────────
         by_model_mode_folder = defaultdict(
-            lambda: defaultdict(lambda: defaultdict(lambda: {"gz": [], "sp": []}))
+            lambda: defaultdict(lambda: defaultdict(lambda: {"gz": [], "sp": [], "wc": []}))
         )
         folder_baselines = defaultdict(lambda: {"gz": [], "sp": []})
 
@@ -885,6 +887,11 @@ def page_runs() -> None:
                 by_model_mode_folder[folder][model][mode]["sp"].append(
                     dr["scores_after"]["group_doc"]["sapling"]
                 )
+                # word-count delta
+                if "wordcount_after" in dr and "wordcount_before" in dr:
+                    by_model_mode_folder[folder][model][mode]["wc"].append(
+                        dr["wordcount_after"] - dr["wordcount_before"]
+                    )
 
         # ── plotting ─────────────────────────────────────────────────
         for folder in ["ai_texts", "human_texts", "mixed_texts"]:
@@ -895,8 +902,8 @@ def page_runs() -> None:
             base_gz = np.mean(folder_baselines[folder]["gz"]) if folder_baselines[folder]["gz"] else None
             base_sp = np.mean(folder_baselines[folder]["sp"]) if folder_baselines[folder]["sp"] else None
 
-            # ----------  A. folder-level distributions  ----------
-            with st.expander("Overall distribution charts", expanded=False):
+            # ----------  A. folder-level detector distributions  ----------
+            with st.expander("Overall detector-score distributions", expanded=False):
                 for detector in ("gz", "sp"):
                     fig, (ax_doc, ax_para) = plt.subplots(1, 2, figsize=(12, 4))
                     for model, modes in by_model_mode_folder[folder].items():
@@ -921,8 +928,8 @@ def page_runs() -> None:
                     plt.tight_layout()
                     st.pyplot(fig)
 
-            # ----------  B. per-model-per-mode distributions ----------
-            with st.expander("Per-model / mode distribution charts", expanded=False):
+            # ----------  B. per-model / mode detector distributions ----------
+            with st.expander("Per-model / mode detector-score distributions", expanded=False):
                 for model, modes in by_model_mode_folder[folder].items():
                     for mode_key in ("doc", "para"):
                         scores_gz = modes[mode_key]["gz"]
@@ -953,6 +960,25 @@ def page_runs() -> None:
                         ax2.grid(True, alpha=0.3)
                         ax2.legend()
 
+                        plt.tight_layout()
+                        st.pyplot(fig)
+
+            # ----------  C. per-model / mode word-count-Δ distributions ----------
+            with st.expander("Per-model / mode Word-count Δ distributions", expanded=False):
+                for model, modes in by_model_mode_folder[folder].items():
+                    for mode_key in ("doc", "para"):
+                        wc_deltas = modes[mode_key]["wc"]
+                        if not wc_deltas:
+                            continue
+
+                        st.markdown(f"**{model}** – {mode_key.title()} mode")
+                        fig, ax = plt.subplots(figsize=(8, 4))
+                        safe_hist(ax, wc_deltas, bins=30, alpha=0.75)
+                        ax.axvline(0, color="black", linewidth=1.2, label="No change")
+                        ax.set_xlabel("Word-count Δ (after − before)")
+                        ax.set_ylabel("Drafts")
+                        ax.grid(True, alpha=0.3)
+                        ax.legend()
                         plt.tight_layout()
                         st.pyplot(fig)
 
