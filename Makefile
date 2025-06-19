@@ -128,7 +128,7 @@ check-env:
 # Initialize project
 init: check-env
 	@echo "Initializing project..."
-	@mkdir -p data/ai_texts data/human_texts data/mixed_texts
+	@mkdir -p data/ai_texts data/human_texts data/ai_paras data/human_paras
 	@mkdir -p cache logs results
 	@echo "Project initialized!"
 

@@ -72,8 +72,8 @@ logs/
 # !data/mixed_texts/.gitkeep
 
 # Cache and results
-cache/*
-!cache/.gitkeep
+# cache/*
+# !cache/.gitkeep
 results/*
 !results/.gitkeep
 

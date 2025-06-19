@@ -5,7 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA      = ROOT / "data"
 AI_DOCS   = DATA / "ai_texts"
 HUMAN_DOCS= DATA / "human_texts"
-MIXED_DOCS= DATA / "mixed_texts"
+AI_PARAS = DATA / "ai_paras"
+HUMAN_PARAS = DATA / "human_paras"
 
 RESULTS   = ROOT / "results"
 CACHE_DIR = ROOT / "cache"

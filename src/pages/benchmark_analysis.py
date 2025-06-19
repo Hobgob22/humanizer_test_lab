@@ -567,7 +567,7 @@ def page_runs() -> None:
             )
 
         # Folder ordering
-        folder_order = ["ai_texts", "human_texts", "mixed_texts"]
+        folder_order = ["ai_texts", "human_texts", "ai_paras", "human_paras"]
         available_folders = [f for f in folder_order if f in detailed_stats]
         other_folders = [f for f in detailed_stats if f not in folder_order]
         all_folders = available_folders + other_folders
@@ -727,7 +727,7 @@ def page_runs() -> None:
                 """
             )
 
-        folder_order = ["ai_texts", "human_texts", "mixed_texts"]
+        folder_order = ["ai_texts", "human_texts", "ai_paras", "human_paras"]
         available_folders = [f for f in folder_order if f in detailed_stats]
 
         sub_tabs = ["All Folders"] + [
@@ -964,7 +964,7 @@ def page_runs() -> None:
                     )
 
         # ── plotting ─────────────────────────────────────────────────
-        for folder in ["ai_texts", "human_texts", "mixed_texts"]:
+        for folder in ["ai_texts", "human_texts", "ai_paras", "human_paras"]:
             if folder not in by_model_mode_folder:
                 continue
 
@@ -1073,7 +1073,7 @@ def page_runs() -> None:
         for d in docs:
             groups[d.get("folder", "(unknown)")].append(d)
         
-        for folder in ["ai_texts", "human_texts", "mixed_texts"]:
+        for folder in ["ai_texts", "human_texts", "ai_paras", "human_paras"]:
             if folder in groups:
                 folder_docs = groups[folder]
                 successful = sum(1 for d in folder_docs if d.get("runs"))

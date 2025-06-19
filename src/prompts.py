@@ -128,12 +128,22 @@ FINETUNED_SYSTEM_PROMPT: str = FINETUNED_PARA_SYSTEM_PROMPT
 EVALUATION_PROMPT = """
 You will receive ORIGINAL text and its HUMANIZED rewrite.
 
+Your task is to evaluate whether the humanized version preserves key elements from the original.
+
+Pay special attention to citations, which appear in parentheses and may include:
+- APA/Harvard style: (Smith, 2021), (Johnson), (Pearse et al., 2001), (Brown & Garcia, 2018)
+- MLA style: (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60)
+- Reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001) where f/u/s are prefixes followed by 6 digits
+
 Return *pure JSON* with exactly these keys (all boolean):
 {
-  "same_meaning":      ... ,
-  "same_lang":         ... ,
-  "no_missing_info":   ... ,
-  "citation_preserved":...
+  "same_meaning": true/false - Does the humanized text convey the same meaning as the original?,
+  "same_lang": true/false - Is the humanized text in the same language as the original?,
+  "no_missing_info": true/false - Does the humanized text contain all information from the original?,
+  "citation_preserved": true/false - Are ALL citations from the original preserved exactly in the humanized version?
 }
+
+For citation_preserved: Every citation in parentheses from the original MUST appear in the humanized text. The citation content must be identical, though its position in the sentence may change.
+
 No commentary, no extra keys.
 """

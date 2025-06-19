@@ -40,7 +40,7 @@ COPY --chown=appuser:appuser . .
 
 # Create writable directories and adjust ownership
 RUN mkdir -p cache logs results \
-           data/ai_texts data/human_texts data/mixed_texts \
+           data/ai_texts data/human_texts data/ai_paras data/human_paras \
     && chown -R appuser:appuser /app
 
 # Switch to non-root user

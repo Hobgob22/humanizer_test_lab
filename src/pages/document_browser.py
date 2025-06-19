@@ -1,21 +1,21 @@
-# src/pages/document_browser.py  – rewritten version with “Analyze all” button
+# src/pages/document_browser.py  – fixed: no nested expanders, JSON views now in tabs
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, List, Callable
 import concurrent.futures
+from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from src.pages.utils import (
-    colored_metric,
     ZERO_SHOT_THRESHOLD,
-    natural_key,  # ← use natural sort helper (do **not** edit it)
+    colored_metric,
+    natural_key,  # ← keep natural sort helper untouched
 )
-from src.results_db import list_runs, load_run
 from src.pipeline import load_ai_scores
+from src.results_db import list_runs, load_run
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +30,7 @@ def page_browser() -> None:
     # ── 1 · Folder selection ────────────────────────────────────────────
     folders: List[str] = st.multiselect(
         "Select folders to browse",
-        ["ai_texts", "human_texts", "mixed_texts"],
+        ["ai_texts", "human_texts", "ai_paras", "human_paras"],
         default=["ai_texts"],
         help="Choose which document folders to display",
     )
@@ -134,7 +134,7 @@ def _display_single_doc(path: Path, compare_run: str | None) -> None:
         with col3:
             st.metric("Word Count", sum(len(p.split()) for p in doc["segments"]))
 
-        # ── overall AI-detection scores ───────────────────────────────
+        # ── overall AI-detection scores ────────────────────────────────
         st.markdown("### 🎯 Document-level AI detection")
         col1, col2 = st.columns(2)
         with col1:
@@ -143,11 +143,11 @@ def _display_single_doc(path: Path, compare_run: str | None) -> None:
             st.metric("Sapling", f"{doc['overall']['sapling']:.3f}")
 
         if doc["overall"]["gptzero"] <= ZERO_SHOT_THRESHOLD:
-            st.success(f"✅ GPTZero zero-shot (≤10 %): {doc['overall']['gptzero']:.3f}")
+            st.success(f"✅ GPTZero zero-shot (≤10 %) : {doc['overall']['gptzero']:.3f}")
         if doc["overall"]["sapling"] <= ZERO_SHOT_THRESHOLD:
-            st.success(f"✅ Sapling zero-shot (≤10 %): {doc['overall']['sapling']:.3f}")
+            st.success(f"✅ Sapling zero-shot (≤10 %) : {doc['overall']['sapling']:.3f}")
 
-        # ── paragraph table ───────────────────────────────────────────
+        # ── paragraph table ────────────────────────────────────────────
         st.markdown("### 📊 Paragraph-level analysis")
         para_df = pd.DataFrame(
             {
@@ -182,13 +182,35 @@ def _display_single_doc(path: Path, compare_run: str | None) -> None:
             height=300,
         )
 
-        # ── optionally show raw text segments ────────────────────────
+        # ── raw JSON score views (use tabs → no nested expanders) ──────
+        st.markdown("### 🗂️ Raw detector scores")
+        tab_gz, tab_sp = st.tabs(["🟠 GPTZero", "🟢 Sapling"])
+
+        with tab_gz:
+            st.json(
+                {
+                    "document_score": doc["overall"]["gptzero"],
+                    "paragraph_scores_group": doc["group_par"]["gptzero"],
+                    "paragraph_scores_ind": doc["ind_par"]["gptzero"],
+                }
+            )
+
+        with tab_sp:
+            st.json(
+                {
+                    "document_score": doc["overall"]["sapling"],
+                    "paragraph_scores_group": doc["group_par"]["sapling"],
+                    "paragraph_scores_ind": doc["ind_par"]["sapling"],
+                }
+            )
+
+        # ── optionally show raw text segments ──────────────────────────
         if st.checkbox(f"Show text segments for {path.name}", key=f"show_seg_{path.name}"):
             for i, seg in enumerate(doc["segments"], 1):
                 st.markdown(f"**Paragraph {i}:**")
                 st.text_area("", seg, height=100, disabled=True, key=f"seg_{path.name}_{i}")
 
-        # ── comparison with benchmark run (if selected) ──────────────
+        # ── comparison with benchmark run (if selected) ────────────────
         if compare_run:
             st.markdown(f"### 🔄 Comparison with benchmark: **{compare_run}**")
             run_data = load_run(compare_run) or {}

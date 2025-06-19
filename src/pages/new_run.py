@@ -260,7 +260,8 @@ def page_new_run():
     FOLDERS = {
         "AI texts": "data/ai_texts",
         "Human texts": "data/human_texts",
-        "Mixed texts": "data/mixed_texts",
+        "AI paragraphs": "data/ai_paras",
+        "Human paragraphs": "data/human_paras",
     }
     folder_labels = st.multiselect(
         "Folders to include",
