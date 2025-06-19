@@ -352,46 +352,72 @@ def _merge_heading_content(para_objs, hum_content):
     return out
 
 # ═══════════════ 8 · Draft generator ════════════════════════════════
-def _generate_single_draft(model: str, iteration: int, orig_text: str, para_objs, log=None):
+def _generate_single_draft(
+    model: str,
+    iteration: int,
+    orig_text: str,
+    para_objs,
+    *,
+    include_para: bool = True,
+    log=None,
+):
+    """
+    Generate one draft.  When *include_para* is False (every *.docx*
+    inside *_paras folders) only the **doc-mode** humanisation runs.
+    """
     _stage(f"Starting draft generation • model={model} • iter={iteration+1}", log)
-    content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
-    _maybe_log(f"Found {len(content_paras)} content paragraphs", log)
 
-    with _fast_pool(max_workers=2) as pool:
-        fut_doc  = pool.submit(_humanize_doc, orig_text, model, log)
-        fut_para = pool.submit(_humanize_paragraphs, content_paras, model, log)
+    # ── Doc-level ───────────────────────────────────────────────────
+    hum_doc = _humanize_doc(orig_text, model, log)
+    doc_paras = [p.strip() for p in hum_doc.splitlines() if p.strip()]
+    _maybe_log(f"Doc-mode complete • {model} • {len(doc_paras)} paragraphs", log)
 
-        hum_doc = fut_doc.result()
-        doc_paras = [p.strip() for p in hum_doc.splitlines() if p.strip()]
-        _maybe_log(f"Doc-mode complete • {model} • {len(doc_paras)} paragraphs", log)
-
-        hum_para_content = fut_para.result()
-        hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
-        _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
-
-    _stage(f"✓ Draft pair complete • model={model} • iter={iteration+1}", log)
-    return [{
-        "model": model, "mode": "doc", "iter": iteration,
+    specs = [{
+        "model": model,
+        "mode": "doc",
+        "iter": iteration,
         "humanized_text": hum_doc,
         "humanized_paras_resolved": doc_paras,
-    }, {
-        "model": model, "mode": "para", "iter": iteration,
-        "humanized_paras": hum_para_paras,
-        "humanized_paras_resolved": hum_para_paras,
-        "humanized_text": "\n\n".join(hum_para_paras),
     }]
 
-def _generate_all_drafts(models, iterations, orig_text, para_objs, log=None):
+    # ── Optional paragraph-mode ────────────────────────────────────
+    if include_para:
+        content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
+        if content_paras:
+            hum_para_content = _humanize_paragraphs(content_paras, model, log)
+            hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
+            _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
+
+            specs.append({
+                "model": model,
+                "mode": "para",
+                "iter": iteration,
+                "humanized_paras": hum_para_paras,
+                "humanized_paras_resolved": hum_para_paras,
+                "humanized_text": "\n\n".join(hum_para_paras),
+            })
+
+    _stage(f"✓ Draft generation done • model={model} • iter={iteration+1}", log)
+    return specs
+
+
+def _generate_all_drafts(models, iterations, orig_text, para_objs,
+                         log=None, *, include_para: bool = True):
     out: List[Dict] = []
     total_tasks = len(models) * iterations
     max_workers = min(HUMANIZER_MAX_WORKERS, total_tasks)
 
-    _stage(f"Generating {total_tasks} draft pairs", log)
+    modes_lbl = "draft pairs" if include_para else "doc-only drafts"
+    _stage(f"Generating {total_tasks} {modes_lbl}", log)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         fut_to_info = {}
         for m in models:
             for i in range(iterations):
-                fut = pool.submit(_generate_single_draft, m, i, orig_text, para_objs, log)
+                fut = pool.submit(
+                    _generate_single_draft,
+                    m, i, orig_text, para_objs,
+                    include_para=include_para, log=log,
+                )
                 fut_to_info[fut] = (m, i)
 
         completed = 0
@@ -500,7 +526,11 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                 _maybe_log(f"🔄 Retrying Phase 1 (attempt {attempt}/{max_retries})", logger)
                 time.sleep(min(30 * (attempt - 1), 120))  # exponential backoff: 30s, 60s, 120s
             
-            drafts = _generate_all_drafts(models, iterations, orig_full, para_objs, logger)
+            include_para = doc_path.parent.name not in ("ai_paras", "human_paras")
+            drafts = _generate_all_drafts(
+                models, iterations, orig_full, para_objs,
+                log=logger, include_para=include_para,
+            )
             break  # Success, exit retry loop
             
         except KeyboardInterrupt:

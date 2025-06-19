@@ -6,12 +6,13 @@ Command-line batch runner with immediate Ctrl+C handling.
 – Within each document, all iterations run concurrently
 – Progress is shown document by document
 """
-
+import os
 import json
 import argparse
 import signal
 import sys
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import REHUMANIZE_N, OPENAI_API_KEY
 from .pipeline import run_test
@@ -56,6 +57,13 @@ def main():
         default=None,
         help=f"Iterations per model (default {REHUMANIZE_N})",
     )
+    ap.add_argument(
+        "--max-parallel-docs",
+        type=int,
+        default=int(os.getenv("MAX_PARALLEL_DOCS", 4)),
+        help="Maximum documents processed in parallel",
+    )
+
     args = ap.parse_args()
 
     iterations = args.iters or REHUMANIZE_N
@@ -72,34 +80,38 @@ def main():
     print(f"Processing {len(docs)} documents sequentially")
     print(f"Models: {', '.join(models)} ({len(models)} total)")
     print(f"Iterations per model: {iterations}")
-    print(f"Total drafts per document: {len(models) * iterations * 2} (doc + para modes)")
-    print("-" * 60)
+    doc_only   = sum(1 for d in docs if d.parent.name.endswith("_paras"))
+    both_modes = len(docs) - doc_only
+
+    if both_modes and doc_only:
+        per_regular = len(models) * iterations * 2
+        per_para    = len(models) * iterations * 1
+        print(f"Drafts per document: {per_regular} (regular folders), "
+            f"{per_para} (*_paras folders)")
+    else:
+        per_doc  = len(models) * iterations * (2 if both_modes else 1)
+        mode_lbl = "doc + para modes" if both_modes else "doc mode only"
+        print(f"Total drafts per document: {per_doc} ({mode_lbl})")
+        print("-" * 60)
     
     results = []
-    
+
+    def _worker(p: Path):
+        return p, run_test(p, models, _log, iterations)   # ← no override
+
     try:
-        # Process documents sequentially
-        for idx, doc_path in enumerate(docs, 1):
-            print(f"\n[Document {idx}/{len(docs)}] Starting: {doc_path.name}")
-            print(f"  This document will process {len(models) * iterations} draft pairs concurrently")
-            
-            result = run_test(doc_path, models, _log, iterations)
-            results.append(result)
-            
-            # Show summary for this document
-            if result.get("runs"):
-                draft_count = len(result["runs"])
-                para_count = result.get("paragraph_count", 0)
-                print(f"\n✅ Completed: {doc_path.name}")
-                print(f"   - Generated {draft_count} drafts")
-                print(f"   - Document has {para_count} paragraphs")
-            else:
-                print(f"\n⚠️  Skipped: {doc_path.name} (no paragraphs)")
+        with ThreadPoolExecutor(max_workers=args.max_parallel_docs) as pool:
+            fut2doc = {pool.submit(_worker, p): p for p in docs}
+
+            for idx, fut in enumerate(as_completed(fut2doc), 1):
+                p, res = fut.result()
+                print(f"\n[{idx}/{len(docs)}] Finished: {p.name}")
+                results.append(res)
 
     except KeyboardInterrupt:
-        # Our signal handler should catch this first, but just in case:
         print("\nInterrupted by user. Exiting.", flush=True)
         sys.exit(1)
+
 
     # Save results
     output_path = Path(args.out)

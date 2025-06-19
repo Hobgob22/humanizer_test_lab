@@ -297,12 +297,30 @@ def page_new_run():
     # ── 5 · workload preview ───────────────────────────────────────
     if model_labels:
         docs = _gather_docs(doc_counts, FOLDERS)
-        total_drafts = len(docs) * len(model_labels) * iterations * 2
-        st.info(
-            f"📊 **Workload preview:** {len(docs)} docs × "
-            f"{len(model_labels)} models × {iterations} iterations × 2 modes "
-            f"= **{total_drafts} drafts**"
+
+        doc_only   = sum(1 for d in docs if d.parent.name.endswith("_paras"))
+        both_modes = len(docs) - doc_only
+        total_drafts = (
+            both_modes * len(model_labels) * iterations * 2
+            + doc_only   * len(model_labels) * iterations * 1
         )
+
+        if both_modes and doc_only:
+            st.info(
+                f"📊 **Workload preview:** "
+                f"{both_modes} docs × 2 modes + "
+                f"{doc_only} docs × 1 mode × "
+                f"{len(model_labels)} models × {iterations} iterations "
+                f"= **{total_drafts} drafts**"
+            )
+        else:
+            modes = 2 if both_modes else 1
+            st.info(
+                f"📊 **Workload preview:** {len(docs)} docs × "
+                f"{len(model_labels)} models × {iterations} iterations × {modes} mode"
+                f"{'' if modes==1 else 's'} = **{total_drafts} drafts**"
+            )
+
 
     # ── 6 · RUN button ─────────────────────────────────────────────
     if st.button(

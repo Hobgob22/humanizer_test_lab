@@ -14,8 +14,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from contextlib import contextmanager
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+    FIRST_COMPLETED,
+)
 
 from .paths import RESULTS
+from .config import MAX_PARALLEL_DOCS, LOG_HISTORY_LIMIT
 from .pipeline import run_test
 from .results_db import save_run
 
@@ -125,6 +132,10 @@ def update_job_status(
                     "timestamp": time.time(),
                     "message": log_entry
                 })
+                # Keep only the most recent N messages
+                if len(logs) > LOG_HISTORY_LIMIT:
+                    logs = logs[-LOG_HISTORY_LIMIT:]
+
         
         # Build update query
         updates = ["status = ?"]
@@ -241,58 +252,61 @@ def _run_benchmark_job(
         
         results = []
         
-        for idx, doc_path in enumerate(docs, 1):
-            # Check for cancellation
-            if _should_cancel(job_id):
-                update_job_status(job_id, JobStatus.CANCELLED, 
-                                processed_docs=idx-1,
-                                log_entry="Job cancelled by user")
-                return
-            
-            # Update progress
-            update_job_status(
-                job_id, 
-                JobStatus.RUNNING,
-                current_doc=doc_path.name,
-                processed_docs=idx-1,
-                log_entry=f"Processing ({idx}/{len(docs)}): {doc_path.name}"
-            )
-            
+        results = []
+        processed_counter = 0
+
+        def _process_single(doc_path: Path):
+            """Wrapper so we can push work into the pool."""
             try:
-                # Run test with custom logger
+                _job_logger(job_id, f"▶️ queued {doc_path.name}")
+
                 res = run_test(
-                    doc_path, 
-                    models, 
-                    lambda msg: _job_logger(job_id, msg),
-                    iterations
+                    doc_path,
+                    models,
+                    lambda m: _job_logger(job_id, m),
+                    iterations,            # ← honour global setting
                 )
-                
+                return doc_path, res, None
+            except Exception as exc:
+                return doc_path, None, str(exc)
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_DOCS,
+                                thread_name_prefix="doc") as pool:
+            fut2doc = {pool.submit(_process_single, p): p for p in docs}
+
+            for fut in as_completed(fut2doc):
+                # Early-exit on cancellation
+                if _should_cancel(job_id):
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    update_job_status(job_id, JobStatus.CANCELLED,
+                                      processed_docs=processed_counter,
+                                      log_entry="Job cancelled by user")
+                    return
+
+                processed_counter += 1
+                doc_path, res, err = fut.result()
+
+                if err:
+                    update_job_status(
+                        job_id, JobStatus.RUNNING,
+                        processed_docs=processed_counter,
+                        log_entry=f"❌ Error {doc_path.name}: {err}"
+                    )
+                    continue
+
                 if res.get("runs"):
                     results.append(res)
                     update_job_status(
-                        job_id,
-                        JobStatus.RUNNING,
-                        processed_docs=idx,
-                        log_entry=f"✅ Completed {doc_path.name} - {len(res['runs'])} drafts"
+                        job_id, JobStatus.RUNNING,
+                        processed_docs=processed_counter,
+                        log_entry=f"✅ Completed {doc_path.name} – {len(res['runs'])} drafts"
                     )
                 else:
                     update_job_status(
-                        job_id,
-                        JobStatus.RUNNING,
-                        processed_docs=idx,
+                        job_id, JobStatus.RUNNING,
+                        processed_docs=processed_counter,
                         log_entry=f"⚠️ Skipped {doc_path.name} (no paragraphs)"
                     )
-                    
-            except Exception as e:
-                error_msg = f"Error processing {doc_path.name}: {str(e)}"
-                update_job_status(
-                    job_id,
-                    JobStatus.RUNNING,
-                    processed_docs=idx,
-                    log_entry=f"❌ {error_msg}"
-                )
-                # Continue with next document instead of failing entire job
-                continue
         
         # Save results
         if results:

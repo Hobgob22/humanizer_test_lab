@@ -50,3 +50,14 @@ DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 50))    # Mixed de
 
 # Cap paragraph-level concurrency
 PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 16))
+
+# ────────────────────────────────────────────────────────────────
+# 6 · PIPELINE-LEVEL PARALLELISM
+# ────────────────────────────────────────────────────────────────
+# Maximum number of documents that may advance through the
+# 4-phase pipeline **at the same time**.  Keep conservative –  
+# the token-bucket limiter still guards per-API quotas.
+MAX_PARALLEL_DOCS     = int(os.getenv("MAX_PARALLEL_DOCS", 4))
+
+# Hard-cap on in-memory log history per job (oldest lines dropped)
+LOG_HISTORY_LIMIT     = int(os.getenv("LOG_HISTORY_LIMIT", 500))
