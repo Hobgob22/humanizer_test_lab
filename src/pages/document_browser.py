@@ -8,6 +8,8 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import streamlit as st
+import math  # ← pagination helper
+
 
 from src.pages.utils import (
     ZERO_SHOT_THRESHOLD,
@@ -69,7 +71,15 @@ def page_browser() -> None:
         compare_run = None
 
     # ── 6 · Page intro & legend ─────────────────────────────────────────
-    st.subheader(f"📄 Documents ({len(docs)} found)")
+    # ── 6 · Page intro & legend  +  pagination  ─────────────────────────
+    page_size    = 10
+    total_docs   = len(docs)
+    total_pages  = max(1, math.ceil(total_docs / page_size))
+    curr_page    = st.session_state.get("doc_page", 0)
+    curr_page    = max(0, min(curr_page, total_pages - 1))  # clamp inside range
+
+    st.subheader(f"📄 Documents ({total_docs} total) – Page {curr_page + 1}/{total_pages}")
+
     with st.expander("ℹ️ What AI-detection scores mean", expanded=False):
         st.markdown(
             """
@@ -83,8 +93,21 @@ def page_browser() -> None:
             """
         )
 
-    # ── 7 · Render each document block ──────────────────────────────────
-    for doc_path in docs:
+    # ── navigation controls ────────────────────────────────────────────
+    nav_prev, nav_next = st.columns([1, 1])
+    with nav_prev:
+        if st.button("⬅️ Prev", disabled=curr_page == 0, key="doc_prev"):
+            st.session_state["doc_page"] = curr_page - 1
+            st.experimental_rerun()
+    with nav_next:
+        if st.button("Next ➡️", disabled=curr_page >= total_pages - 1, key="doc_next"):
+            st.session_state["doc_page"] = curr_page + 1
+            st.experimental_rerun()
+
+    # ── 7 · Render only the current slice of documents ─────────────────
+    start_idx = curr_page * page_size
+    end_idx   = start_idx + page_size
+    for doc_path in docs[start_idx:end_idx]:
         _display_single_doc(doc_path, compare_run)
 
 
