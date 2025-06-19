@@ -103,10 +103,25 @@ with st.sidebar.expander("📖 Metrics Glossary"):
 
 st.sidebar.caption(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-# Route to appropriate page
-if PAGE == "New Run":
-    page_new_run()
-elif PAGE == "Benchmark Analysis":
-    page_runs()
-else:
-    page_browser()
+# ──────────────────────────── Page rendering with placeholder ──────────
+# Hold all page widgets inside a single persistent placeholder.
+# When the user navigates to another tab we EMPTY that placeholder
+# first, so the previous page disappears instantly instead of hanging
+# around while the new one renders top-to-bottom.
+
+if "page_placeholder" not in st.session_state:
+    st.session_state.page_placeholder = st.empty()
+
+# Clear previous page on navigation change
+if st.session_state.get("current_page") != PAGE:
+    st.session_state.page_placeholder.empty()
+    st.session_state.current_page = PAGE
+
+# Render the selected page inside the placeholder container
+with st.session_state.page_placeholder.container():
+    if PAGE == "New Run":
+        page_new_run()
+    elif PAGE == "Benchmark Analysis":
+        page_runs()
+    else:
+        page_browser()
