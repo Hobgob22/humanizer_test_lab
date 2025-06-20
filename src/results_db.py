@@ -14,6 +14,7 @@ runs (
 
 import json, time, os
 from pathlib import Path
+from contextlib import contextmanager
 from .paths import RESULTS
 
 # Try to import Turso client, fall back to sqlite3 for local development
@@ -21,12 +22,14 @@ try:
     import libsql_experimental as libsql
     TURSO_AVAILABLE = True
 except ImportError:
-    import sqlite3
     TURSO_AVAILABLE = False
+
+import sqlite3
 
 DB_PATH = RESULTS / "runs.sqlite"
 DB_PATH.parent.mkdir(exist_ok=True, parents=True)
 
+@contextmanager
 def _conn():
     # Check if we're in Streamlit Cloud (has Turso credentials)
     turso_url = os.getenv("TURSO_DATABASE_URL")
@@ -41,25 +44,32 @@ def _conn():
     except:
         pass
     
-    if TURSO_AVAILABLE and turso_url and turso_auth_token:
-        # Use Turso in production
-        c = libsql.connect(turso_url, auth_token=turso_auth_token)
-    else:
-        # Use local SQLite for development
-        if TURSO_AVAILABLE:
-            c = libsql.connect(str(DB_PATH))
+    conn = None
+    try:
+        if TURSO_AVAILABLE and turso_url and turso_auth_token:
+            # Use Turso in production
+            conn = libsql.connect(turso_url, auth_token=turso_auth_token)
         else:
-            c = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
-    
-    c.execute("""CREATE TABLE IF NOT EXISTS runs (
-                   name      TEXT PRIMARY KEY,
-                   ts        REAL,
-                   folders   TEXT,
-                   models    TEXT,
-                   json_blob TEXT
-                 );""")
-    c.commit()
-    return c
+            # Use local SQLite for development
+            if TURSO_AVAILABLE:
+                conn = libsql.connect(str(DB_PATH))
+            else:
+                conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
+        
+        # Create table if it doesn't exist
+        conn.execute("""CREATE TABLE IF NOT EXISTS runs (
+                       name      TEXT PRIMARY KEY,
+                       ts        REAL,
+                       folders   TEXT,
+                       models    TEXT,
+                       json_blob TEXT
+                     );""")
+        conn.commit()
+        
+        yield conn
+    finally:
+        if conn:
+            conn.close()
 
 # ───── public helpers ────────────────────────────────────────────────
 def save_run(name: str, folders: list[str], models: list[str], data: dict):
