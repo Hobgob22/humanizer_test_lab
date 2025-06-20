@@ -1,7 +1,6 @@
 # src/ui.py - v6.0 (Refactored with modular pages)
 from __future__ import annotations
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -27,16 +26,6 @@ if not OPENAI_API_KEY:
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-# debug: show where we’re writing
-results_dir = os.getenv("RESULTS_DIR", "not set")
-st.sidebar.markdown(f"**RESULTS_DIR:** `{results_dir}`")
-
-if os.path.isdir(results_dir):
-    files = os.listdir(results_dir)
-    st.sidebar.markdown(f"**.humanizer/results contains:** {files}")
-else:
-    st.sidebar.error(f"Folder not found: {results_dir}")
 
 # Import page functions
 from src.pages import page_new_run, page_runs, page_browser
