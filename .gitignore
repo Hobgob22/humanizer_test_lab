@@ -58,7 +58,7 @@ logs/
 # Databases
 *.sqlite
 # !detector_cache.sqlite
-# !runs.sqlite
+!runs.sqlite
 *.db
 *.sqlite3
 *.db-journal
