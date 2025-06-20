@@ -21,9 +21,9 @@ if ENV_RESULTS:
     dest_db = RESULTS / "runs.sqlite"
     if repo_db.exists() and not dest_db.exists():
         shutil.copy2(repo_db, dest_db)
-    else:
-        RESULTS = ROOT / "results"
-        RESULTS.mkdir(parents=True, exist_ok=True)
+else:
+    RESULTS = ROOT / "results"
+    RESULTS.mkdir(parents=True, exist_ok=True)
 
 CACHE_DIR = ROOT / "cache"
 LOG_DIR   = ROOT / "logs"
