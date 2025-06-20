@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -8,7 +9,7 @@ HUMAN_DOCS= DATA / "human_texts"
 AI_PARAS = DATA / "ai_paras"
 HUMAN_PARAS = DATA / "human_paras"
 
-RESULTS   = ROOT / "results"
+RESULTS = Path(os.getenv("RESULTS_DIR", ROOT / "results")).expanduser()
 CACHE_DIR = ROOT / "cache"
 LOG_DIR   = ROOT / "logs"
 
