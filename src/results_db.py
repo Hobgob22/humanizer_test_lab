@@ -83,7 +83,8 @@ def list_runs() -> list[dict]:
     with _conn() as c:
         cur = c.execute("SELECT name, ts, folders, models FROM runs ORDER BY ts DESC")
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols,row)) for row in cur]
+        rows = cur.fetchall()
+        return [dict(zip(cols,row)) for row in rows]
 
 def load_run(name: str) -> dict|None:
     with _conn() as c:
