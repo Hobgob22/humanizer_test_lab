@@ -58,8 +58,8 @@ logs/
 # Databases
 *.sqlite
 # !detector_cache.sqlite
-!runs.sqlite
-!jobs.sqlite
+# !runs.sqlite
+# !jobs.sqlite
 
 *.db
 *.sqlite3
