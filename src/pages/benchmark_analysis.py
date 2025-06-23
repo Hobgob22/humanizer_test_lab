@@ -81,11 +81,14 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 }
             )
 
+    # ── ignore None / NaN values ───────────────────────────────────
+    _valid = lambda v: v is not None and not (isinstance(v, float) and np.isnan(v))
+
     folder_avg_baselines = {
         f: {
-            "gptzero": np.mean([b["gptzero"] for b in bl]),
-            "sapling": np.mean([b["sapling"] for b in bl]),
-            "wordcount": np.mean([b["wordcount"] for b in bl]),
+            "gptzero": np.nanmean([b["gptzero"]  for b in bl if _valid(b["gptzero"])]),
+            "sapling": np.nanmean([b["sapling"]  for b in bl if _valid(b["sapling"])]),
+            "wordcount": np.nanmean([b["wordcount"] for b in bl if _valid(b["wordcount"])]),
         }
         for f, bl in folder_baselines.items()
     }
@@ -163,8 +166,10 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 if not data["draft_count"]:
                     continue
 
-                after_gz = np.mean([s["gptzero"] for s in data["after_scores"]])
-                after_sp = np.mean([s["sapling"] for s in data["after_scores"]])
+                _ok = lambda v: v is not None and not (isinstance(v, float) and np.isnan(v))
+
+                after_gz = np.nanmean([s["gptzero"]  for s in data["after_scores"] if _ok(s["gptzero"])])
+                after_sp = np.nanmean([s["sapling"]  for s in data["after_scores"] if _ok(s["sapling"])])
 
                 zs_gz_pct = data["zs_hits"]["gptzero"] / data["draft_count"] * 100
                 zs_sp_pct = data["zs_hits"]["sapling"] / data["draft_count"] * 100
@@ -231,7 +236,8 @@ def _compute_model_perf(
             for mode, s in modes.items():
                 bucket = agg[model][mode]
                 bucket["gz_deltas"].append(s["deltas"]["gptzero"])
-                bucket["sp_deltas"].append(s["deltas"]["sapling"])
+                if not (isinstance(s["deltas"]["sapling"], float) and np.isnan(s["deltas"]["sapling"])):
+                    bucket["sp_deltas"].append(s["deltas"]["sapling"])
                 bucket["quality"].append(np.mean(list(s["quality"].values())))
                 bucket["drafts"] += s["draft_count"]
                 bucket["zs_gz_hits"] += s["zs_hits"]["gptzero"]
@@ -249,8 +255,8 @@ def _compute_model_perf(
                     "Model": model,
                     "Mode": mode.title(),
                     "Total Drafts": m["drafts"],
-                    "Avg Δ GZ": np.mean(m["gz_deltas"]),
-                    "Avg Δ SP": np.mean(m["sp_deltas"]),
+                    "Avg Δ GZ": np.nanmean(m["gz_deltas"]) if m["gz_deltas"] else np.nan,
+                    "Avg Δ SP": np.nanmean(m["sp_deltas"]) if m["sp_deltas"] else np.nan,
                     "Zero-shot GZ": f"{m['zs_gz_hits'] / m['drafts'] * 100:.1f}%",
                     "Zero-shot SP": f"{m['zs_sp_hits'] / m['drafts'] * 100:.1f}%",
                     "Avg Quality": f"{np.mean(m['quality']):.1f}%",
@@ -265,7 +271,11 @@ def _describe(arr):
     """Return min, 25-perc, median, mean, 75-perc, max for *arr* (list-like)."""
     if not arr:
         return {"Min": 0, "P25": 0, "Median": 0, "Mean": 0, "P75": 0, "Max": 0}
-    a = np.asarray(arr)
+    # Drop None / NaN first
+    clean = [v for v in arr if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if not clean:
+        return {"Min": 0, "P25": 0, "Median": 0, "Mean": 0, "P75": 0, "Max": 0}
+    a = np.asarray(clean, dtype=float)
     return {
         "Min":    float(np.min(a)),
         "P25":    float(np.percentile(a, 25)),
@@ -792,8 +802,8 @@ def page_runs() -> None:
                     "Folder": folder.replace('_', ' ').title(),
                     "Total Drafts": total_drafts,
                     "Models": len(models),
-                    "Avg Δ GZ": np.mean(all_gz_deltas),
-                    "Avg Δ SP": np.mean(all_sp_deltas),
+                    "Avg Δ GZ": np.nanmean(all_gz_deltas),
+                    "Avg Δ SP": np.nanmean(all_sp_deltas),
                     "Zero-shot GZ": f"{np.mean(all_zero_shot_gz):.1f}%",
                     "Zero-shot SP": f"{np.mean(all_zero_shot_sp):.1f}%",
                     "Avg Quality": f"{np.mean(all_quality):.1f}%"
