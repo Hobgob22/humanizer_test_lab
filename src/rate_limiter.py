@@ -28,7 +28,7 @@ _LIMITS: dict[str, tuple[int, int]] = {
 }
 
 # Special handling for Sapling (character-based limit)
-_SAPLING_LIMIT = (120_000, 120)  # 120,000 chars per 2 minutes
+_SAPLING_LIMIT = (100_000, 120)  # 120,000 chars per 2 minutes
 
 _queues: dict[str, deque[float]] = {api: deque() for api in _LIMITS}
 _sapling_queue: deque[tuple[float, int]] = deque()  # (timestamp, char_count)
