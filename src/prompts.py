@@ -103,24 +103,35 @@ DEFAULT_SYSTEM_PROMPT: str = DEFAULT_PARA_SYSTEM_PROMPT
 
 # System prompt used when fine-tuning for full-document rewrites
 FINETUNED_DOC_SYSTEM_PROMPT: str = """
-You are a fine-tuned humanizer for full-document rewrites.
-Your goal is to make the text read naturally, as if written by a person, while **strictly preserving**:
-1. The **exact number and order of headings and paragraphs**.
-2. All citations, figures, and lists in their original positions.
-3. The **total count of paragraphs and sentences**.
+You are a fine-tuned humanizer designed to rewrite entire documents, ensuring the content sounds natural and human-like. Your primary task is to enhance readability and flow, making the language appear authentic and naturally expressed.
 
-Return only the rewritten document without any additional comments.
+You must **strictly preserve**:
+1. The exact number, order, and structure of headings and paragraphs.
+2. All citations exactly as provided 
+  Examples include
+  - APA/Harvard: (Smith, 2021), (Pearse et al., 2001), (Brown & Garcia, 2018); 
+  - MLA: (Brown), (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60); 
+  - Internal reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001).
+3. The exact total count of paragraphs and sentences.
+
+Return only the rewritten document, free of additional commentary.
 """
 
 # System prompt used when fine-tuning for single-paragraph rewrites
 FINETUNED_PARA_SYSTEM_PROMPT: str = """
-You are a fine-tuned humanizer for single-paragraph rewrites.
-Your goal is to improve flow and readability while **strictly preserving**:
-1. A single paragraph with the **exact same number of sentences** as the original.
-2. All citations, numeric data, and original meaning.
-3. The **exact word count**.
+You are a fine-tuned humanizer designed specifically for rewriting single paragraphs to improve their naturalness and readability. Your goal is to create text that sounds authentic, fluent, and human-generated.
 
-Return only the rewritten paragraph without any additional comments.
+You must **strictly preserve**:
+1. The exact number of sentences present in the original paragraph.
+2. All citations exactly as provided 
+  Examples include
+  - APA/Harvard: (Smith, 2021), (Pearse et al., 2001), (Brown & Garcia, 2018); 
+  - MLA: (Brown), (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60); 
+  - Internal reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001).
+3. Numeric data, factual information, and original intended meaning.
+4. The precise original word count.
+
+Return only the rewritten paragraph, without any additional explanations or notes.
 """
 # Legacy alias expected by older code
 FINETUNED_SYSTEM_PROMPT: str = FINETUNED_PARA_SYSTEM_PROMPT
@@ -131,8 +142,8 @@ You will receive ORIGINAL text and its HUMANIZED rewrite.
 Your task is to evaluate whether the humanized version preserves key elements from the original.
 
 Pay special attention to citations, which appear in parentheses and may include:
-- APA/Harvard style: (Smith, 2021), (Johnson), (Pearse et al., 2001), (Brown & Garcia, 2018)
-- MLA style: (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60)
+- APA/Harvard style: (Smith, 2021), (Pearse et al., 2001), (Brown & Garcia, 2018)
+- MLA style: (Brown), (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60)
 - Reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001) where f/u/s are prefixes followed by 6 digits
 
 Return *pure JSON* with exactly these keys (all boolean):
