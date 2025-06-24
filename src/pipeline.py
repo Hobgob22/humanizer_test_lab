@@ -492,7 +492,7 @@ def _assemble_per_para_stats(
 def run_test(doc_path: Path, models: List[str]|None=None,
              logger: Callable[[str],None]|None=None,
              iterations: int = REHUMANIZE_N,
-             max_retries: int = 3):
+             max_retries: int = 5):
     _stage("[Pipeline] run_test START", logger)
     _maybe_log("="*60, logger)
     _maybe_log(f"Processing document: {doc_path.name}", logger)
