@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 ###############################################################################
-#  Benchmark Analysis – extended metrics
+#  Benchmark Analysis – extended metrics with MERGE functionality
 #  • Per-flag quality columns (length_ok, same_meaning, …)
 #  • Word-count-difference columns:
 #        – Within 10 words %   – Within 20 words %
 #        – % Longer            – % Shorter
 #  • Per-folder word-count-delta histogram + summary
+#  • NEW: Merge multiple runs into a single view
 ###############################################################################
 
 import time
@@ -50,6 +51,66 @@ def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
     for doc in docs:
         for dr in doc.get("runs", []):
             yield doc, dr
+
+
+def _merge_runs_data(run_ids: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
+    """
+    Merge data from multiple runs, handling duplicate models.
+    Returns merged docs list and metadata about the merge.
+    """
+    merged_docs = []
+    model_sources = defaultdict(set)  # Track which runs each model came from
+    doc_by_name = defaultdict(lambda: {"runs": []})  # Group by document name
+    
+    for run_id in run_ids:
+        run_data = load_run(run_id)
+        if not run_data:
+            continue
+            
+        docs = run_data.get("docs", [])
+        
+        for doc in docs:
+            doc_name = doc["document"]
+            
+            # Copy doc metadata if not already present
+            if "document" not in doc_by_name[doc_name]:
+                doc_by_name[doc_name].update({
+                    "document": doc_name,
+                    "folder": doc.get("folder", "unknown"),
+                    "paragraph_count": doc.get("paragraph_count", 0),
+                    "error": doc.get("error"),
+                    "warning": doc.get("warning"),
+                    "empty": doc.get("empty", False),
+                    "phase_failed": doc.get("phase_failed"),
+                })
+            
+            # Add runs from this doc, tracking model sources
+            for run in doc.get("runs", []):
+                model = run.get("model", "unknown")
+                mode = run.get("mode", "unknown")
+                iter_num = run.get("iter", 0)
+                
+                # Create a unique key for this draft
+                draft_key = (model, mode, iter_num)
+                model_sources[model].add(run_id)
+                
+                # Add the run with source metadata
+                run_copy = run.copy()
+                run_copy["_source_run"] = run_id
+                doc_by_name[doc_name]["runs"].append(run_copy)
+    
+    # Convert back to list format
+    merged_docs = list(doc_by_name.values())
+    
+    # Create metadata about the merge
+    merge_metadata = {
+        "total_runs": len(run_ids),
+        "model_sources": dict(model_sources),
+        "total_models": len(model_sources),
+        "models_list": sorted(model_sources.keys()),
+    }
+    
+    return merged_docs, merge_metadata
 
 
 # ╔════════════════════════ analytics ══════════════════════════════════╗
@@ -112,9 +173,14 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 "zs_hits": {"gptzero": 0, "sapling": 0},
                 # NEW – keep raw series for the nerd-stats tab
                 "series": defaultdict(list),
+                # Track source runs for merged views
+                "source_runs": set(),
             },
         )
 
+        # Track source run if present
+        if "_source_run" in dr:
+            bucket["source_runs"].add(dr["_source_run"])
 
         # detector scores
         gz = dr["scores_after"]["group_doc"].get("gptzero", 0)
@@ -205,6 +271,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     },
                     "wc_deltas": data["wc_deltas"],      # for histograms
                     "series": data["series"],             # 🔑 keep raw numbers
+                    "source_runs": data["source_runs"],   # Track which runs contributed
                 }
     return result
 
@@ -225,6 +292,7 @@ def _compute_model_perf(
                 "zs_gz_hits": 0,
                 "zs_sp_hits": 0,
                 "folders": set(),
+                "source_runs": set(),
             }
         )
     )
@@ -243,6 +311,7 @@ def _compute_model_perf(
                 bucket["zs_gz_hits"] += s["zs_hits"]["gptzero"]
                 bucket["zs_sp_hits"] += s["zs_hits"]["sapling"]
                 bucket["folders"].add(folder)
+                bucket["source_runs"].update(s.get("source_runs", set()))
 
     rows = []
     for model, modes in agg.items():
@@ -261,6 +330,7 @@ def _compute_model_perf(
                     "Zero-shot SP": f"{m['zs_sp_hits'] / m['drafts'] * 100:.1f}%",
                     "Avg Quality": f"{np.mean(m['quality']):.1f}%",
                     "Folders": len(m["folders"]),
+                    "Source Runs": len(m["source_runs"]),
                 }
             )
     return pd.DataFrame(rows)
@@ -385,6 +455,9 @@ def _render_model_perf(df: pd.DataFrame, title_suffix: str = "") -> None:
         st.info("No data available for this selection.")
         return
 
+    # Check if this is a merged view (has Source Runs column)
+    is_merged = "Source Runs" in df.columns
+    
     styled = (
         df.style.applymap(_style_delta, subset=["Avg Δ GZ", "Avg Δ SP"])
         .applymap(_style_zs, subset=["Zero-shot GZ", "Zero-shot SP"])
@@ -483,15 +556,118 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
 
 # ═══════════════ RUN OVERVIEW & DOC PAGE (main) ═══════════════════════
 def page_runs() -> None:
-    # --- run selection --------------------------------------------------------
-    run_id = qp_get("run")
-    doc_name = qp_get("doc")
-    view = qp_get("view")
-
+    # Get all available runs
     runs_meta = list_runs()
     if not runs_meta:
         st.info("No benchmarks stored yet. Create a new run to get started!")
         return
+
+    # Check for view mode
+    view_mode = qp_get("view_mode", "single")  # single or merged
+    
+    # View mode selector
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.header("📊 Benchmark Analysis")
+    with col2:
+        view_options = ["Single Run", "Merge Runs"]
+        selected_view = st.radio(
+            "View Mode",
+            view_options,
+            index=0 if view_mode == "single" else 1,
+            horizontal=True,
+            key="view_mode_selector"
+        )
+        new_view_mode = "single" if selected_view == "Single Run" else "merged"
+        if new_view_mode != view_mode:
+            qp_set(view_mode=new_view_mode)
+            st.rerun()
+
+    # Handle different view modes
+    if view_mode == "merged":
+        _page_merged_runs(runs_meta)
+    else:
+        _page_single_run(runs_meta)
+
+
+def _page_merged_runs(runs_meta: List[Dict]) -> None:
+    """Handle merged runs view."""
+    st.subheader("🔀 Merge Multiple Runs")
+    
+    with st.expander("ℹ️ About Merged View", expanded=False):
+        st.markdown("""
+        **Merged View** allows you to combine results from multiple benchmark runs:
+        - Select multiple runs to merge their results
+        - Models are automatically deduplicated
+        - All statistics are recalculated for the combined dataset
+        - Original runs remain unchanged (this is just a view)
+        
+        **Use cases:**
+        - Compare models tested in different runs
+        - See aggregate statistics across multiple experiments
+        - Analyze performance without re-running benchmarks
+        """)
+    
+    # Multi-select for runs
+    run_labels = [
+        f"{r['name']} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))})"
+        for r in runs_meta
+    ]
+    
+    selected_labels = st.multiselect(
+        "Select runs to merge",
+        run_labels,
+        default=run_labels[:2] if len(run_labels) >= 2 else run_labels,
+        help="Choose 2 or more runs to merge their results"
+    )
+    
+    if len(selected_labels) < 2:
+        st.warning("Please select at least 2 runs to merge.")
+        return
+    
+    # Get selected run IDs
+    selected_indices = [run_labels.index(label) for label in selected_labels]
+    selected_run_ids = [runs_meta[i]["name"] for i in selected_indices]
+    
+    # Merge the data
+    with st.spinner("Merging runs..."):
+        merged_docs, merge_metadata = _merge_runs_data(selected_run_ids)
+    
+    if not merged_docs:
+        st.error("No data found in selected runs.")
+        return
+    
+    # Display merge info
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🔀 Merged Runs", merge_metadata["total_runs"])
+    with col2:
+        st.metric("🤖 Unique Models", merge_metadata["total_models"])
+    with col3:
+        successful_docs = sum(1 for d in merged_docs if d.get("runs"))
+        st.metric("📄 Documents", len(merged_docs))
+    with col4:
+        total_drafts = sum(len(d.get("runs", [])) for d in merged_docs)
+        st.metric("📝 Total Drafts", total_drafts)
+    
+    # Show which models came from which runs
+    with st.expander("📊 Model Sources", expanded=False):
+        model_source_df = pd.DataFrame([
+            {"Model": model, "Source Runs": len(sources), "Run Names": ", ".join(sorted(sources))}
+            for model, sources in merge_metadata["model_sources"].items()
+        ])
+        st.dataframe(model_source_df, use_container_width=True, hide_index=True)
+    
+    # Now display the merged analysis using the same code as single run
+    _display_analysis(merged_docs, f"Merged: {len(selected_run_ids)} runs", is_merged=True)
+
+
+def _page_single_run(runs_meta: List[Dict]) -> None:
+    """Handle single run view (original functionality)."""
+    # --- run selection --------------------------------------------------------
+    run_id = qp_get("run")
+    doc_name = qp_get("doc")
+    view = qp_get("view")
 
     run_labels = [
         f"{r['name']} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))})"
@@ -512,8 +688,25 @@ def page_runs() -> None:
         _page_document(run_id, docs, doc_name)
         return
 
+    # Display analysis for single run
+    _display_analysis(docs, run_id, is_merged=False)
+    
+    # Run management (only for single runs)
+    st.divider()
+    col1, col2 = st.columns([6, 1])
+    with col2:
+        if st.button("🗑️ Delete Run", type="secondary"):
+            if st.checkbox("Confirm deletion"):
+                delete_run(run_id)
+                st.warning("Run deleted!")
+                qp_set(run=None, view=None, doc=None)
+                st.rerun()
+
+
+def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) -> None:
+    """Display the analysis tabs for either single or merged runs."""
     # --- overview header ------------------------------------------------------
-    st.header(f"📊 Benchmark Analysis: **{run_id}**")
+    st.header(f"📊 Analysis: **{run_name}**")
 
     successful_docs = sum(1 for d in docs if d.get("runs"))
     failed_docs = len(docs) - successful_docs
@@ -1078,6 +1271,9 @@ def page_runs() -> None:
             Documents marked with ❌ failed processing and have no results.
             """)
         
+        # Only show view buttons for single run mode
+        show_view_buttons = not is_merged
+        
         # Group documents by folder and status
         groups: DefaultDict[str, List[Dict]] = defaultdict(list)
         for d in docs:
@@ -1105,23 +1301,15 @@ def page_runs() -> None:
                             elif doc.get("warning"):
                                 st.caption(f"Warning: {doc['warning']}")
                         with col3:
-                            if doc.get("runs"):
+                            if show_view_buttons and doc.get("runs"):
                                 if st.button("View", key=f"view_{folder}_{i}"):
-                                    qp_set(run=run_id, view="doc", doc=doc["document"])
+                                    qp_set(run=run_name, view="doc", doc=doc["document"])
                                     st.rerun()
+                            elif doc.get("runs"):
+                                st.caption("(View in single run mode)")
                             else:
                                 st.button("View", key=f"view_{folder}_{i}", disabled=True)
 
-    # Run management
-    st.divider()
-    col1, col2 = st.columns([6, 1])
-    with col2:
-        if st.button("🗑️ Delete Run", type="secondary"):
-            if st.checkbox("Confirm deletion"):
-                delete_run(run_id)
-                st.warning("Run deleted!")
-                qp_set(run=None, view=None, doc=None)
-                st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────
 def _page_document(run_id: str, docs: List[Dict], doc_name: str):
