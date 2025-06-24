@@ -44,12 +44,12 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 # - GPTZero: 500 req/min (8.3 req/sec)
 # - Sapling: character-based, not request-based
 
-HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 50))   # Can handle mixed providers
-GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 50))      # 700 req/min
-DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 50))    # Mixed detectors
+HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 100))   # Can handle mixed providers
+GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 70))      # 700 req/min
+DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 20))    # Mixed detectors
 
 # Cap paragraph-level concurrency
-PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 16))
+PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 20))
 
 # ────────────────────────────────────────────────────────────────
 # 6 · PIPELINE-LEVEL PARALLELISM
@@ -57,7 +57,7 @@ PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 16))
 # Maximum number of documents that may advance through the
 # 4-phase pipeline **at the same time**.  Keep conservative –  
 # the token-bucket limiter still guards per-API quotas.
-MAX_PARALLEL_DOCS     = int(os.getenv("MAX_PARALLEL_DOCS", 4))
+MAX_PARALLEL_DOCS     = int(os.getenv("MAX_PARALLEL_DOCS", 10))
 
 # Hard-cap on in-memory log history per job (oldest lines dropped)
-LOG_HISTORY_LIMIT     = int(os.getenv("LOG_HISTORY_LIMIT", 500))
+LOG_HISTORY_LIMIT     = int(os.getenv("LOG_HISTORY_LIMIT", 200))
