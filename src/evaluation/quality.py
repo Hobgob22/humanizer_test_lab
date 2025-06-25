@@ -234,6 +234,9 @@ def quality(original: str, humanized: str) -> Dict[str, bool]:
             print("[quality] Note: GEMINI_API_KEY not set - using heuristic evaluation")
 
     # 3. Combine all checks
+    if not orig_citations and not hum_citations:
+        gem_flags["citation_preserved"] = True
+
     result = {
         "length_ok": length_ok,
         "citation_content_ok": citation_content_ok,
