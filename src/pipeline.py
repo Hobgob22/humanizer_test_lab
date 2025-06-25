@@ -158,9 +158,19 @@ def _detect_gptzero(text: str, paragraphs: List[str], *, skip_cache: bool, log=N
 def _detect_sapling(text: str, paragraphs: List[str], *, skip_cache: bool, log=None):
     # Acquire semaphore to limit Sapling concurrency
     with _SAPLING_SEMAPHORE:
-        # Always skip cache for Sapling (no caching with rotating keys)
-        _maybe_log("Sapling: 🔄 computing scores", log)
-        raw = sapling.detect_ai(text, skip_cache=True)
+        if not skip_cache:
+            # Try cache first for original documents
+            cached = sapling.get("sapling", text)
+            if cached is not None:
+                _maybe_log("Sapling: ✨ cache hit — scores retrieved", log)
+                raw = cached
+            else:
+                _maybe_log("Sapling: 🔄 cache miss — computing scores", log)
+                raw = sapling.detect_ai(text, skip_cache=True)
+        else:
+            # Skip cache for humanized drafts
+            _maybe_log("Sapling: 🔄 computing scores (new draft)", log)
+            raw = sapling.detect_ai(text, skip_cache=True)
 
         doc_score   = raw["score"]
         sent_scores = [s["score"] for s in raw.get("sentence_scores", [])]
@@ -181,9 +191,8 @@ def _detect_sapling(text: str, paragraphs: List[str], *, skip_cache: bool, log=N
 def _detect_both(text: str, paras: List[str], *, skip_cache: bool, log=None):
     """Run both detectors concurrently."""
     with _fast_pool(max_workers=2) as pool:
-        # GPTZero respects skip_cache parameter
+        # Both detectors respect skip_cache parameter
         fut_gz = pool.submit(_detect_gptzero, text, paras, skip_cache=skip_cache, log=log)
-        # Sapling always skips cache (handled internally)
         fut_sp = pool.submit(_detect_sapling, text, paras, skip_cache=skip_cache, log=log)
         gz_doc, gz_par = fut_gz.result()
         sp_doc, sp_par = fut_sp.result()
@@ -202,13 +211,15 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
     # Check if baseline is already cached
     baseline_cached = False
     if baseline_hash in uniq:
-        # Try to get cached scores for the original document (GPTZero only)
+        # Try to get cached scores for the original document
         cached_gz = gptzero.get("gptzero", baseline_text)
+        cached_sp = sapling.get("sapling", baseline_text)
         
-        if cached_gz is not None:
-            # Extract GPTZero scores from cache
-            _maybe_log("Original document: ✨ using cached GPTZero scores", log)
+        if cached_gz is not None and cached_sp is not None:
+            # Extract scores directly from cache without API calls
+            _maybe_log("Original document: ✨ using cached scores (no API calls)", log)
             
+            # Extract GPTZero scores from cache
             doc_scores_gz[baseline_hash] = cached_gz["documents"][0]["completely_generated_prob"]
             para_raw = cached_gz["documents"][0].get("paragraphs") or []
             if len(para_raw) == len(baseline_paras):
@@ -216,16 +227,9 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
             else:
                 gz_para_scores = [doc_scores_gz[baseline_hash]] * len(baseline_paras)
             
-            # Update paragraph scores
-            para_scores_gz.update({_hash(pt): s for pt, s in zip(baseline_paras, gz_para_scores)})
-            
-            # Always compute Sapling for baseline (no caching)
-            _maybe_log("Original document: 🔄 computing Sapling scores", log)
-            with _SAPLING_SEMAPHORE:
-                sp_raw = sapling.detect_ai(baseline_text, skip_cache=True)
-            
-            doc_scores_sp[baseline_hash] = sp_raw["score"]
-            sent_scores = [s["score"] for s in sp_raw.get("sentence_scores", [])]
+            # Extract Sapling scores from cache
+            doc_scores_sp[baseline_hash] = cached_sp["score"]
+            sent_scores = [s["score"] for s in cached_sp.get("sentence_scores", [])]
             sp_para_scores, idx = [], 0
             for para in baseline_paras:
                 n_sent = len(_split_sentences(para))
@@ -236,6 +240,8 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
                 else:
                     sp_para_scores.append(doc_scores_sp[baseline_hash])
             
+            # Update paragraph scores
+            para_scores_gz.update({_hash(pt): s for pt, s in zip(baseline_paras, gz_para_scores)})
             para_scores_sp.update({_hash(pt): s for pt, s in zip(baseline_paras, sp_para_scores)})
             
             baseline_cached = True
@@ -245,7 +251,7 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
     # Count only new texts that need scoring
     new_texts_count = len(uniq)
     if new_texts_count == 0:
-        _stage("✓ Detector scoring complete (all cached)", log)
+        _stage("✓ Detector scoring complete (baseline cached)", log)
         return doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp
 
     _stage(f"Detector scoring phase • {new_texts_count} new texts to score", log)
@@ -687,7 +693,7 @@ def load_ai_scores(doc_path: Path, log: Callable[[str], None] | None = None, max
                 _maybe_log(f"🔄 Retrying detector scoring (attempt {attempt}/{max_retries})", log)
                 time.sleep(min(30 * (attempt - 1), 120))
 
-            # ----- fixed: pass log as keyword so signature matches -----
+            # For original documents, try cache first (skip_cache=False)
             scores = _detect_both(full_text, segs, skip_cache=False, log=log)
             break
 
