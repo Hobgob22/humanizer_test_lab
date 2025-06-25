@@ -27,7 +27,7 @@ MODEL_REGISTRY = {
     # ---- our fine-tunes -----------------------------------------------
     "gpt-4o-old-model":          {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",                              "prompt_id": "finetuned"},
 
-    # differentiated codenames for fine‑tunes created on 2024‑08‑06 and 2025‑04‑14
+    # differentiated codenames for fine-tunes created on 2024-08-06 and 2025-04-14
     "gpt-4o-hum30raw":           {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw:BcCFkyvO",                                         "prompt_id": "finetuned"},
     "gpt-4o-hum40naive":         {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum40-naive-auto:Bi0rO31o",                                    "prompt_id": "finetuned"},
 
@@ -35,4 +35,11 @@ MODEL_REGISTRY = {
     "gpt-4.1-hum40naive":        {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum40-naive-auto:Bi0wCXgi",                                    "prompt_id": "finetuned"},
 
     "gpt-4.1-mini-hum40naive":   {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:hum40-naive-auto:Bi0qnqGa",                               "prompt_id": "finetuned"},
+
+    # NEW fine-tunes (2024-08-06 and 2025-04-14) ----------
+    "gpt-4.1-hum30raw-fix1":     {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum30raw-fix1:Bm3eO9ge",                                      "prompt_id": "finetuned"},
+    "gpt-4o-hum30raw-fix1":      {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw-fix1:Bm3b7N9S",                                       "prompt_id": "finetuned"},
+
+    "gpt-4o-hum30raw-fix2":      {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum-30raw-fix2:BmIOvuFc",                                      "prompt_id": "finetuned"},
+    "gpt-4.1-hum30raw-fix2":     {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum-30raw-fix2:BmIQK91Y",                                      "prompt_id": "finetuned"},
 }
