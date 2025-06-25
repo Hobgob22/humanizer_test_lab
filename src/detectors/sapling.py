@@ -4,7 +4,8 @@ Sapling detector with API key rotation
 Features:
 - Rotates API keys on 429 errors
 - Tracks key freshness (least recently used)
-- No caching (as requested)
+- Reads from cache for original documents
+- No cache writes (to avoid bloating with humanized drafts)
 - Character-based rate limiting
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 import time
 import requests
 import threading
+from collections import deque          # ← NEW
 from typing import Dict, List, Optional
 
 from ..config import SAPLING_API_KEYS
@@ -23,94 +25,94 @@ _START_DELAY = 2  # seconds
 
 
 class SaplingClient:
-    """Manages multiple Sapling API keys with rotation on 429."""
-    
+    """Manages multiple Sapling API keys with rotation on 429 **and**
+    per-key 120 000-char / 120-second quota."""
+
+    _CHAR_LIMIT = 120_000            # chars per 120 s
+    _WINDOW_SEC = 120                # rolling window
+    _COOLDOWN_429 = 300              # 5 min cool-down after any 429
+
     def __init__(self, api_keys: List[str]):
         if not api_keys:
             raise ValueError("No Sapling API keys provided")
-        
+
         self.api_keys = api_keys
-        self.key_last_used: Dict[str, float] = {key: 0.0 for key in api_keys}
-        self.key_last_429: Dict[str, float] = {key: 0.0 for key in api_keys}
+
+        # ── per-key state ────────────────────────────────────────────────
+        self.key_last_used: Dict[str, float] = {k: 0.0 for k in api_keys}
+        self.key_last_429: Dict[str, float] = {k: 0.0 for k in api_keys}
+        self.key_usage: Dict[str, deque]   = {k: deque() for k in api_keys}  # (ts, chars)
+        # ──────────────────────────────────────────────────────────────────
         self._lock = threading.Lock()
-        
         print(f"[Sapling] Initialized with {len(api_keys)} API keys")
-    
-    def _get_freshest_key(self) -> str:
-        """Get the least recently used key that hasn't had a recent 429."""
+
+    # ── helpers ──────────────────────────────────────────────────────────
+    def _prune_usage(self, key: str, now: float) -> int:
+        q = self.key_usage[key]
+        while q and now - q[0][0] >= self._WINDOW_SEC:
+            q.popleft()
+        return sum(c for _, c in q)
+
+    def _key_has_quota(self, key: str, chars: int, now: float) -> bool:
+        return self._prune_usage(key, now) + chars <= self._CHAR_LIMIT
+
+    def _select_key(self, chars: int) -> Optional[str]:
+        now = time.time()
         with self._lock:
-            now = time.time()
-            
-            # Filter out keys that got 429 in the last 5 minutes
-            available_keys = [
-                key for key in self.api_keys
-                if now - self.key_last_429.get(key, 0) > 300
+            candidates = [
+                k for k in self.api_keys
+                if (now - self.key_last_429.get(k, 0) > self._COOLDOWN_429)
+                and self._key_has_quota(k, chars, now)
             ]
-            
-            if not available_keys:
-                # All keys are in cooldown, use the one with oldest 429
-                return min(self.api_keys, key=lambda k: self.key_last_429.get(k, 0))
-            
-            # Return the least recently used available key
-            return min(available_keys, key=lambda k: self.key_last_used.get(k, 0))
-    
-    def _mark_key_used(self, key: str, got_429: bool = False):
-        """Mark a key as used, optionally marking it as rate limited."""
+            if not candidates:
+                return None
+            return min(candidates, key=lambda k: self.key_last_used.get(k, 0.0))
+
+    def _record_usage(self, key: str, chars: int) -> None:
         with self._lock:
+            self.key_usage[key].append((time.time(), chars))
             self.key_last_used[key] = time.time()
-            if got_429:
-                self.key_last_429[key] = time.time()
-                print(f"[Sapling] Key got 429, rotating... (key ending in ...{key[-6:]})")
-    
+
+    def _note_429(self, key: str) -> None:
+        with self._lock:
+            self.key_last_429[key] = time.time()
+            self.key_last_used[key] = time.time()
+            print(f"[Sapling] Key got 429, rotating… (…{key[-6:]})")
+
+    # ── main call ────────────────────────────────────────────────────────
     def detect(self, text: str) -> dict:
-        """
-        Call Sapling's /aidetect endpoint with automatic key rotation.
-        
-        Returns the raw JSON response.
-        """
-        url = "https://api.sapling.ai/api/v1/aidetect"
+        """Call Sapling /aidetect with per-key quota & automatic rotation."""
+        url        = "https://api.sapling.ai/api/v1/aidetect"
         char_count = len(text)
-        
-        # Try each key until one works
-        attempts = 0
+        attempts   = 0
         last_error = None
-        
-        while attempts < len(self.api_keys) * 2:  # Allow multiple rounds
+
+        while attempts < len(self.api_keys) * 2:      # two full rounds
+            api_key = self._select_key(char_count)
+
+            if api_key is None:                       # everyone busy/exhausted
+                time.sleep(1)
+                continue
+
             attempts += 1
-            
-            # Get the freshest key
-            api_key = self._get_freshest_key()
-            
-            # Apply rate limiting for character quota
-            wait_sapling(char_count)
-            
             try:
-                payload = {"key": api_key, "text": text}
-                resp = requests.post(url, json=payload, timeout=60)
-                
-                if resp.status_code == 429:
-                    # Rate limit hit - mark key and try another
-                    self._mark_key_used(api_key, got_429=True)
-                    time.sleep(1)  # Brief pause before trying next key
+                resp = requests.post(
+                    url, json={"key": api_key, "text": text}, timeout=60
+                )
+
+                if resp.status_code == 429:           # short-term OR daily cap
+                    self._note_429(api_key)
+                    time.sleep(1)
                     continue
-                
+
                 resp.raise_for_status()
-                
-                # Success! Mark key as used (but not rate limited)
-                self._mark_key_used(api_key, got_429=False)
+                self._record_usage(api_key, char_count)
                 return resp.json()
-                
-            except requests.HTTPError as e:
+
+            except requests.RequestException as e:    # network / 5xx, etc.
                 last_error = e
-                if resp.status_code != 429:
-                    # Non-429 error, might be a real problem
-                    raise
-            except Exception as e:
-                last_error = e
-                # Network or other error, try next key
-                time.sleep(_START_DELAY)
-        
-        # All keys exhausted
+                time.sleep(1)                         # quick hop to next key
+
         raise RuntimeError(
             f"All {len(self.api_keys)} Sapling API keys exhausted. "
             f"Last error: {last_error}"
@@ -135,7 +137,8 @@ def detect_ai(text: str, *, skip_cache: bool = False) -> dict:
     """
     Main entry point - compatible with existing code.
     
-    The skip_cache parameter is ignored (no caching).
+    No caching is performed for new API calls (all use rotating keys).
+    The skip_cache parameter is kept for compatibility but ignored.
     """
     client = _get_client()
     
@@ -160,7 +163,8 @@ def detect_ai(text: str, *, skip_cache: bool = False) -> dict:
             time.sleep(_START_DELAY * (2 ** (attempt - 1)))
 
 
-# Compatibility function - no caching
+# Compatibility function - check cache for reads only
 def get(detector: str, text: str):
-    """Compatibility function - just calls detect_ai (no cache)."""
-    return detect_ai(text)
+    """Check cache for existing scores (read-only, no writes)."""
+    from ..cache import get as _cache_get
+    return _cache_get(detector, text)
