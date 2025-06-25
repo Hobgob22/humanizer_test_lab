@@ -28,7 +28,7 @@ _LIMITS: dict[str, tuple[int, int]] = {
 }
 
 # Special handling for Sapling (character-based limit)
-_SAPLING_LIMIT = (100_000, 120)  # 120,000 chars per 2 minutes
+_SAPLING_LIMIT = (120_000, 120)  # 120,000 chars per 2 minutes
 
 _queues: dict[str, deque[float]] = {api: deque() for api in _LIMITS}
 _sapling_queue: deque[tuple[float, int]] = deque()  # (timestamp, char_count)
@@ -92,6 +92,8 @@ def wait_sapling(char_count: int) -> None:
             # Otherwise sleep until enough quota is freed
             if _sapling_queue:
                 sleep_for = window - (now - _sapling_queue[0][0]) + 0.05
+                # Log when we're waiting due to rate limit
+                print(f"[RateLimiter] Sapling quota full ({current_chars}/{max_chars} chars), waiting {sleep_for:.1f}s")
             else:
                 sleep_for = 0.1  # Short sleep if queue is empty but over limit
                 
