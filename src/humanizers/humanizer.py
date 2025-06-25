@@ -36,9 +36,12 @@ from ..models import MODEL_REGISTRY
 from ..prompts import (
     DEFAULT_DOC_SYSTEM_PROMPT,
     DEFAULT_PARA_SYSTEM_PROMPT,
-    FINETUNED_DOC_SYSTEM_PROMPT,
-    FINETUNED_PARA_SYSTEM_PROMPT,
+    FINETUNED_DOC_SYSTEM_PROMPT1,
+    FINETUNED_DOC_SYSTEM_PROMPT2,
+    FINETUNED_PARA_SYSTEM_PROMPT1,
+    FINETUNED_PARA_SYSTEM_PROMPT2,
 )
+
 from ..rate_limiter import wait as _rate_wait
 
 
@@ -52,6 +55,21 @@ if GEMINI_API_KEY:
 else:
     _gemini_client = None
 
+
+# ─────────────────────── prompt override handling ─────────────────────
+#   display_name  →  "v1" | "v2"
+PROMPT_OVERRIDES: dict[str, str] = {}
+
+def set_prompt_override(model_name: str, variant: str) -> None:
+    """Register a single prompt variant for *model_name*."""
+    if variant not in ("v1", "v2"):
+        raise ValueError("variant must be 'v1' or 'v2'")
+    PROMPT_OVERRIDES[model_name] = variant
+
+def set_prompt_overrides(mapping: dict[str, str]) -> None:
+    """Replace the entire override map in one go."""
+    PROMPT_OVERRIDES.clear()
+    PROMPT_OVERRIDES.update(mapping)
 
 # ─────────────────────── helper functions ─────────────────────
 def _openai_call(text: str, model: str, api: OpenAI, system_prompt: str) -> str:
@@ -166,13 +184,48 @@ def _gemini_call(text: str, model: str, system_prompt: str) -> str:
     return resp.text.strip()
 
 
-def _select_prompt(prompt_id: str, mode: Literal["doc", "para"]) -> str:
-    """Select the appropriate prompt based on prompt_id and mode."""
+def _select_prompt(
+    prompt_id: str,
+    mode: Literal["doc", "para"],
+    *,
+    variant: str | None = None,
+) -> str:
+    """
+    Resolve the system-prompt to use.
+
+    • Non-fine-tuned models → always default prompts  
+    • Fine-tuned models → allow user-selected “v1” or “v2”
+                         (fallback to legacy prompt if none supplied)
+    """
     if prompt_id == "default":
-        return DEFAULT_DOC_SYSTEM_PROMPT if mode == "doc" else DEFAULT_PARA_SYSTEM_PROMPT
+        return (
+            DEFAULT_DOC_SYSTEM_PROMPT
+            if mode == "doc"
+            else DEFAULT_PARA_SYSTEM_PROMPT
+        )
+
     if prompt_id == "finetuned":
-        return FINETUNED_DOC_SYSTEM_PROMPT if mode == "doc" else FINETUNED_PARA_SYSTEM_PROMPT
+        if variant == "v1":
+            return (
+                FINETUNED_DOC_SYSTEM_PROMPT1
+                if mode == "doc"
+                else FINETUNED_PARA_SYSTEM_PROMPT1
+            )
+        if variant == "v2":
+            return (
+                FINETUNED_DOC_SYSTEM_PROMPT2
+                if mode == "doc"
+                else FINETUNED_PARA_SYSTEM_PROMPT2
+            )
+        # Fallback – keeps old behaviour for unattended runs
+        return (
+            FINETUNED_DOC_SYSTEM_PROMPT1
+            if mode == "doc"
+            else FINETUNED_PARA_SYSTEM_PROMPT1
+        )
+
     raise ValueError(f"Unknown prompt_id '{prompt_id}'")
+
 
 
 # ───────────────────────── public API ──────────────────────────
@@ -199,7 +252,8 @@ def humanize(
     model_id = meta["model"]
     prompt_id = meta["prompt_id"]
 
-    system_prompt = _select_prompt(prompt_id, mode)
+    variant = PROMPT_OVERRIDES.get(display_name)  # may be None
+    system_prompt = _select_prompt(prompt_id, mode, variant=variant)
 
     if provider == "openai":
         if not _openai_std:

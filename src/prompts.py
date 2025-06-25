@@ -102,7 +102,29 @@ DEFAULT_SYSTEM_PROMPT: str = DEFAULT_PARA_SYSTEM_PROMPT
 # ───────────────────────── fine-tuned prompts ─────────────────────────
 
 # System prompt used when fine-tuning for full-document rewrites
-FINETUNED_DOC_SYSTEM_PROMPT: str = """
+FINETUNED_DOC_SYSTEM_PROMPT1: str = """
+You are a fine-tuned humanizer for full-document rewrites.
+Your goal is to make the text read naturally, as if written by a person, while **strictly preserving**:
+1. The **exact number and order of headings and paragraphs**.
+2. All citations, figures, and lists in their original positions.
+3. The **total count of paragraphs and sentences**.
+
+Return only the rewritten document without any additional comments.
+"""
+
+# System prompt used when fine-tuning for single-paragraph rewrites
+FINETUNED_PARA_SYSTEM_PROMPT1: str = """
+You are a fine-tuned humanizer for single-paragraph rewrites.
+Your goal is to improve flow and readability while **strictly preserving**:
+1. A single paragraph with the **exact same number of sentences** as the original.
+2. All citations, numeric data, and original meaning.
+3. The **exact word count**.
+
+Return only the rewritten paragraph without any additional comments.
+"""
+
+# System prompt used when fine-tuning for full-document rewrites
+FINETUNED_DOC_SYSTEM_PROMPT2: str = """
 You are a fine-tuned humanizer designed to rewrite entire documents, ensuring the content sounds natural and human-like. Your primary task is to enhance readability and flow, making the language appear authentic and naturally expressed.
 
 You must **strictly preserve**:
@@ -118,7 +140,7 @@ Return only the rewritten document, free of additional commentary.
 """
 
 # System prompt used when fine-tuning for single-paragraph rewrites
-FINETUNED_PARA_SYSTEM_PROMPT: str = """
+FINETUNED_PARA_SYSTEM_PROMPT2: str = """
 You are a fine-tuned humanizer designed specifically for rewriting single paragraphs to improve their naturalness and readability. Your goal is to create text that sounds authentic, fluent, and human-generated.
 
 You must **strictly preserve**:
@@ -133,8 +155,6 @@ You must **strictly preserve**:
 
 Return only the rewritten paragraph, without any additional explanations or notes.
 """
-# Legacy alias expected by older code
-FINETUNED_SYSTEM_PROMPT: str = FINETUNED_PARA_SYSTEM_PROMPT
 
 EVALUATION_PROMPT = """
 You will receive ORIGINAL text and its HUMANIZED rewrite.

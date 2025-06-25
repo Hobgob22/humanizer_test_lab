@@ -15,6 +15,9 @@ from src.job_manager import (
     start_benchmark_job, get_job, get_active_jobs, 
     cancel_job, JobStatus
 )
+from src.humanizers import humanizer as _humanizer
+import src.prompts as _prompts
+
 
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,7 +47,7 @@ def _select_documents(
     # ── 1 · global equal-count (only when 2+ folders) ────────────────
     if len(folders) >= 2:
         min_available = min(limits[f] for f in folders)
-        default_val = st.session_state.get("equal_count", min_available)
+        default_val = min(100, st.session_state.get("equal_count", min_available))
 
         equal_val = st.slider(
             "🔄 Equal docs for *all* selected folders",
@@ -77,7 +80,7 @@ def _select_documents(
             f"{lbl} – documents to include",
             min_value=1,
             max_value=max_docs,
-            value=min(st.session_state[key], max_docs),
+            value=min(100, st.session_state[key], max_docs),
             key=key,
             help=f"{max_docs} .docx files available",
         )
@@ -285,12 +288,38 @@ def page_new_run():
         help="Select which models you wish to test",
     )
 
+    # ── 3b · prompt variant (fine-tunes only) ───────────────────────
+    prompt_overrides: Dict[str, str] = {}
+
+    for m in model_labels:
+        meta = MODEL_REGISTRY[m]
+        if meta.get("prompt_id") == "finetuned":
+            st.markdown(f"**Prompt variant for `{m}`**")
+            key = f"variant_{m}"
+            variant = st.radio(
+                "Choose variant",
+                options=["v1", "v2"],
+                index=0 if st.session_state.get(key, "v2") == "v1" else 1,
+                key=key,
+                horizontal=True,
+            )
+            prompt_overrides[m] = variant
+
+            # Optional prompt preview (read-only)
+            with st.expander("Show system prompt", expanded=False):
+                preview = (
+                    _prompts.FINETUNED_DOC_SYSTEM_PROMPT1
+                    if variant == "v1"
+                    else _prompts.FINETUNED_DOC_SYSTEM_PROMPT2
+                )
+                st.code(preview.strip())
+
     # ── 4 · iteration count ─────────────────────────────────────────
     iterations = st.slider(
         "Iterations per document",
         1,
         10,
-        value=5,
+        value=1,
         help="How many drafts each model should generate for every document",
     )
 
@@ -340,6 +369,7 @@ def page_new_run():
 
         # Start background job
         with st.spinner("Starting background job..."):
+            _humanizer.set_prompt_overrides(prompt_overrides)
             job_id = start_benchmark_job(
                 run_name=run_name,
                 docs=docs,
