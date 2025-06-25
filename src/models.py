@@ -42,4 +42,8 @@ MODEL_REGISTRY = {
 
     "gpt-4o-hum30raw-fix2":      {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum-30raw-fix2:BmIOvuFc",                                      "prompt_id": "finetuned"},
     "gpt-4.1-hum30raw-fix2":     {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:hum-30raw-fix2:BmIQK91Y",                                      "prompt_id": "finetuned"},
+    
+    "gpt-4o-hum30raw-retrain1":     {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw-retrain1:BmIs6zjz",                                      "prompt_id": "finetuned"},
+    "gpt-4o-mini-hum30raw-fix1":     {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:hum30raw-fix1:BmIiNRen",                                      "prompt_id": "finetuned"},
+
 }
