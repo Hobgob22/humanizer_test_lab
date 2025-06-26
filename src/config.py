@@ -55,11 +55,11 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 
 HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 100))   # Can handle mixed providers
 GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 70))      # 700 req/min
-DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 20))    # Mixed detectors
+DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 30))    # Mixed detectors
 
 # Sapling-specific limit to prevent character quota exhaustion
 # With ~10k chars/doc, limit to 10 concurrent to stay under 120k/2min
-SAPLING_MAX_CONCURRENT = int(os.getenv("SAPLING_MAX_CONCURRENT", 10))
+SAPLING_MAX_CONCURRENT = int(os.getenv("SAPLING_MAX_CONCURRENT", 15))
 
 # Cap paragraph-level concurrency
 PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 20))
