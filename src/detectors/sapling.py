@@ -17,7 +17,11 @@ import threading
 from collections import deque          # ← NEW
 from typing import Dict, List, Optional
 
-from ..config import SAPLING_API_KEYS
+from ..config import (
+    SAPLING_PRIMARY_API_KEY,
+    SAPLING_FALLBACK_API_KEYS,
+    SAPLING_API_KEYS,          # keeps legacy list available
+)
 from ..rate_limiter import wait_sapling
 
 _MAX_RETRIES = 5
@@ -25,28 +29,37 @@ _START_DELAY = 2  # seconds
 
 
 class SaplingClient:
-    """Manages multiple Sapling API keys with rotation on 429 **and**
-    per-key 120 000-char / 120-second quota."""
+    """Manages Sapling API keys with **tiered per-key quotas**  
+    – Primary key: 2 000 000 chars / 120 s  
+    – Backup keys: 120 000 chars / 120 s  
+    Rotates to backups only when the primary is rate-limited or out of quota.
+    """
 
-    _CHAR_LIMIT = 120_000            # chars per 120 s
-    _WINDOW_SEC = 120                # rolling window
-    _COOLDOWN_429 = 300              # 5 min cool-down after any 429
+    _PRIMARY_CHAR_LIMIT = 2_000_000     # safe head-room (2 M < 2.5 M)
+    _BACKUP_CHAR_LIMIT  = 120_000
+    _WINDOW_SEC         = 120
+    _COOLDOWN_429       = 300           # 5-min cool-down on HTTP 429
 
-    def __init__(self, api_keys: List[str]):
-        if not api_keys:
-            raise ValueError("No Sapling API keys provided")
+    def __init__(self, primary_key: str, fallback_keys: List[str]):
+        if not primary_key:
+            raise ValueError("Primary Sapling API key required")
 
-        self.api_keys = api_keys
+        self.primary_key = primary_key
+        self.api_keys = [primary_key] + fallback_keys
 
-        # ── per-key state ────────────────────────────────────────────────
-        self.key_last_used: Dict[str, float] = {k: 0.0 for k in api_keys}
-        self.key_last_429: Dict[str, float] = {k: 0.0 for k in api_keys}
-        self.key_usage: Dict[str, deque]   = {k: deque() for k in api_keys}  # (ts, chars)
-        # ──────────────────────────────────────────────────────────────────
+        # Per-key quota limits
+        self.key_limits: Dict[str, int] = {primary_key: self._PRIMARY_CHAR_LIMIT}
+        self.key_limits.update({k: self._BACKUP_CHAR_LIMIT for k in fallback_keys})
+
+        # Rolling-window usage tracking & status
+        self.key_last_used: Dict[str, float] = {k: 0.0 for k in self.api_keys}
+        self.key_last_429:  Dict[str, float] = {k: 0.0 for k in self.api_keys}
+        self.key_usage:     Dict[str, deque] = {k: deque() for k in self.api_keys}
+
         self._lock = threading.Lock()
-        print(f"[Sapling] Initialized with {len(api_keys)} API keys")
+        print(f"[Sapling] Primary key + {len(fallback_keys)} backup key(s) initialised")
 
-    # ── helpers ──────────────────────────────────────────────────────────
+    # ── helpers ────────────────────────────────────────────────────────
     def _prune_usage(self, key: str, now: float) -> int:
         q = self.key_usage[key]
         while q and now - q[0][0] >= self._WINDOW_SEC:
@@ -54,14 +67,22 @@ class SaplingClient:
         return sum(c for _, c in q)
 
     def _key_has_quota(self, key: str, chars: int, now: float) -> bool:
-        return self._prune_usage(key, now) + chars <= self._CHAR_LIMIT
+        return self._prune_usage(key, now) + chars <= self.key_limits[key]
 
     def _select_key(self, chars: int) -> Optional[str]:
         now = time.time()
         with self._lock:
+            # 1️⃣ Prefer the primary key when possible
+            if (
+                now - self.key_last_429[self.primary_key] > self._COOLDOWN_429
+                and self._key_has_quota(self.primary_key, chars, now)
+            ):
+                return self.primary_key
+
+            # 2️⃣ Otherwise choose among backups (least-recently-used)
             candidates = [
-                k for k in self.api_keys
-                if (now - self.key_last_429.get(k, 0) > self._COOLDOWN_429)
+                k for k in self.api_keys if k != self.primary_key
+                and (now - self.key_last_429[k] > self._COOLDOWN_429)
                 and self._key_has_quota(k, chars, now)
             ]
             if not candidates:

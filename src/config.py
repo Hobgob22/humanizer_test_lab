@@ -23,14 +23,31 @@ OPENAI_API_KEY            = os.getenv("OPENAI_API_KEY", "")
 HUMANIZER_OPENAI_API_KEY  = os.getenv("HUMANIZER_OPENAI_API_KEY", "")
 GPTZERO_API_KEY           = os.getenv("GPTZERO_API_KEY", "")
 
-# Sapling API keys - now supports multiple keys for rotation
-SAPLING_API_KEYS_STR      = os.getenv("SAPLING_API_KEYS", "")
-SAPLING_API_KEYS          = [k.strip() for k in SAPLING_API_KEYS_STR.split(",") if k.strip()]
-# Fallback to old single key if new format not provided
-if not SAPLING_API_KEYS:
-    old_key = os.getenv("SAPLING_API_KEY", "")
-    if old_key:
-        SAPLING_API_KEYS = [old_key]
+# ────────────────────────────────────────────────────────────────
+# 3b · SAPLING – primary / fallback key support
+# ────────────────────────────────────────────────────────────────
+SAPLING_PRIMARY_API_KEY   = os.getenv("SAPLING_PRIMARY_API_KEY", "")
+
+SAPLING_FALLBACK_KEYS_STR = os.getenv("SAPLING_FALLBACK_API_KEYS", "")
+SAPLING_FALLBACK_API_KEYS = [
+    k.strip() for k in SAPLING_FALLBACK_KEYS_STR.split(",") if k.strip()
+]
+
+# Back-compatibility: derive from legacy SAPLING_API_KEYS if new
+# vars were not provided.
+if not SAPLING_PRIMARY_API_KEY:
+    legacy_keys_str = os.getenv("SAPLING_API_KEYS", "")
+    legacy_keys = [k.strip() for k in legacy_keys_str.split(",") if k.strip()]
+    if legacy_keys:
+        SAPLING_PRIMARY_API_KEY  = legacy_keys[0]
+        SAPLING_FALLBACK_API_KEYS = legacy_keys[1:]
+
+# Convenience alias retained for existing imports
+SAPLING_API_KEYS = (
+    ([SAPLING_PRIMARY_API_KEY] if SAPLING_PRIMARY_API_KEY else [])
+    + SAPLING_FALLBACK_API_KEYS
+)
+
 
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY", "")
 CLAUDE_API_KEY            = os.getenv("CLAUDE_API_KEY", "")
@@ -55,11 +72,11 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 
 HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 100))   # Can handle mixed providers
 GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 70))      # 700 req/min
-DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 30))    # Mixed detectors
+DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 40))    # Mixed detectors
 
 # Sapling-specific limit to prevent character quota exhaustion
 # With ~10k chars/doc, limit to 10 concurrent to stay under 120k/2min
-SAPLING_MAX_CONCURRENT = int(os.getenv("SAPLING_MAX_CONCURRENT", 15))
+SAPLING_MAX_CONCURRENT = int(os.getenv("SAPLING_MAX_CONCURRENT", 20))
 
 # Cap paragraph-level concurrency
 PARA_MAX_WORKERS      = int(os.getenv("PARA_MAX_WORKERS", 20))
