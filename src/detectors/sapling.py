@@ -148,9 +148,17 @@ def _get_client() -> SaplingClient:
     """Get or create the global Sapling client."""
     global _client
     if _client is None:
-        if not SAPLING_API_KEYS:
+        # Prefer new env-vars; fall back to legacy list if necessary
+        if SAPLING_PRIMARY_API_KEY:
+            primary = SAPLING_PRIMARY_API_KEY
+            backups = SAPLING_FALLBACK_API_KEYS
+        elif SAPLING_API_KEYS:
+            primary = SAPLING_API_KEYS[0]
+            backups = SAPLING_API_KEYS[1:]
+        else:
             raise ValueError("No Sapling API keys configured in environment")
-        _client = SaplingClient(SAPLING_API_KEYS)
+
+        _client = SaplingClient(primary, backups)
     return _client
 
 
