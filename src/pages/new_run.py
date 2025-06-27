@@ -314,6 +314,25 @@ def page_new_run():
                 )
                 st.code(preview.strip())
 
+    # ── 3c · Document mode option (NEW) ─────────────────────────────
+    # Only show this option if regular text folders are selected
+    has_regular_folders = any(f in ["AI texts", "Human texts"] for f in folder_labels)
+    include_doc_mode = True  # Default value
+    
+    if has_regular_folders:
+        st.markdown("### 📄 Humanization Mode Options")
+        include_doc_mode = st.checkbox(
+            "Include document-level humanization",
+            value=True,
+            help="When enabled, documents will be humanized at both document-level and paragraph-level. "
+                 "When disabled, only paragraph-level humanization will be performed (paragraphs are "
+                 "humanized individually then combined).",
+            key="include_doc_mode"
+        )
+        
+        if not include_doc_mode:
+            st.info("ℹ️ Only paragraph-level humanization will be performed for AI texts and Human texts folders.")
+
     # ── 4 · iteration count ─────────────────────────────────────────
     iterations = st.slider(
         "Iterations per document",
@@ -327,27 +346,43 @@ def page_new_run():
     if model_labels:
         docs = _gather_docs(doc_counts, FOLDERS)
 
-        doc_only   = sum(1 for d in docs if d.parent.name.endswith("_paras"))
-        both_modes = len(docs) - doc_only
-        total_drafts = (
-            both_modes * len(model_labels) * iterations * 2
-            + doc_only   * len(model_labels) * iterations * 1
-        )
+        # Count docs by type
+        para_folder_docs = sum(1 for d in docs if d.parent.name.endswith("_paras"))
+        regular_docs = len(docs) - para_folder_docs
+        
+        # Calculate total drafts based on settings
+        total_drafts = 0
+        
+        # Para folder docs always get 1 mode (para mode)
+        total_drafts += para_folder_docs * len(model_labels) * iterations
+        
+        # Regular docs can have 1 or 2 modes depending on include_doc_mode
+        if regular_docs > 0:
+            modes_per_regular = 2 if include_doc_mode else 1
+            total_drafts += regular_docs * len(model_labels) * iterations * modes_per_regular
 
-        if both_modes and doc_only:
+        # Display workload preview
+        if para_folder_docs and regular_docs:
+            modes_desc = "2 modes" if include_doc_mode else "1 mode"
             st.info(
                 f"📊 **Workload preview:** "
-                f"{both_modes} docs × 2 modes + "
-                f"{doc_only} docs × 1 mode × "
+                f"{regular_docs} docs × {modes_desc} + "
+                f"{para_folder_docs} para docs × 1 mode × "
                 f"{len(model_labels)} models × {iterations} iterations "
                 f"= **{total_drafts} drafts**"
             )
-        else:
-            modes = 2 if both_modes else 1
+        elif regular_docs:
+            modes = 2 if include_doc_mode else 1
             st.info(
-                f"📊 **Workload preview:** {len(docs)} docs × "
+                f"📊 **Workload preview:** {regular_docs} docs × "
                 f"{len(model_labels)} models × {iterations} iterations × {modes} mode"
                 f"{'' if modes==1 else 's'} = **{total_drafts} drafts**"
+            )
+        else:
+            st.info(
+                f"📊 **Workload preview:** {para_folder_docs} para docs × "
+                f"{len(model_labels)} models × {iterations} iterations × 1 mode "
+                f"= **{total_drafts} drafts**"
             )
 
 
@@ -376,7 +411,8 @@ def page_new_run():
                 folders=folder_labels,
                 models=model_labels,
                 iterations=iterations,
-                doc_counts=doc_counts
+                doc_counts=doc_counts,
+                include_doc_mode=include_doc_mode  # Pass the new parameter
             )
             
             st.success(f"✅ Job started! ID: {job_id}")

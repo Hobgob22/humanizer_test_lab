@@ -368,56 +368,90 @@ def _generate_single_draft(
     para_objs,
     *,
     include_para: bool = True,
+    include_doc: bool = True,  # NEW: control doc mode
+    is_para_folder: bool = False,  # NEW: flag for para folders
     log=None,
 ):
     """
-    Generate one draft.  When *include_para* is False (every *.docx*
-    inside *_paras folders) only the **doc-mode** humanisation runs.
+    Generate one draft. 
+    - include_para: Whether to run paragraph mode (for regular folders)
+    - include_doc: Whether to run document mode (optional for regular folders)
+    - is_para_folder: True for ai_paras/human_paras folders (use para prompt for single para)
     """
     _stage(f"Starting draft generation • model={model} • iter={iteration+1}", log)
-
-    # ── Doc-level ───────────────────────────────────────────────────
-    hum_doc = _humanize_doc(orig_text, model, log)
-    doc_paras = [p.strip() for p in hum_doc.splitlines() if p.strip()]
-    _maybe_log(f"Doc-mode complete • {model} • {len(doc_paras)} paragraphs", log)
-
-    specs = [{
-        "model": model,
-        "mode": "doc",
-        "iter": iteration,
-        "humanized_text": hum_doc,
-        "humanized_paras_resolved": doc_paras,
-    }]
-
-    # ── Optional paragraph-mode ────────────────────────────────────
-    if include_para:
-        content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
-        if content_paras:
-            hum_para_content = _humanize_paragraphs(content_paras, model, log)
-            hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
-            _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
+    
+    specs = []
+    
+    # For para folders: use para mode prompt for the single paragraph
+    if is_para_folder:
+        # These folders contain single paragraphs, so use para mode
+        hum_text = humanize(orig_text, model, "para", log=log)
+        doc_paras = [hum_text.strip()]  # Single paragraph result
+        _maybe_log(f"Para-folder humanization complete • {model}", log)
+        
+        specs.append({
+            "model": model,
+            "mode": "para",  # Mark as para mode for consistency
+            "iter": iteration,
+            "humanized_text": hum_text,
+            "humanized_paras_resolved": doc_paras,
+        })
+    else:
+        # Regular folders (ai_texts, human_texts)
+        
+        # ── Doc-level (optional) ───────────────────────────────────────────────────
+        if include_doc:
+            hum_doc = _humanize_doc(orig_text, model, log)
+            doc_paras = [p.strip() for p in hum_doc.splitlines() if p.strip()]
+            _maybe_log(f"Doc-mode complete • {model} • {len(doc_paras)} paragraphs", log)
 
             specs.append({
                 "model": model,
-                "mode": "para",
+                "mode": "doc",
                 "iter": iteration,
-                "humanized_paras": hum_para_paras,
-                "humanized_paras_resolved": hum_para_paras,
-                "humanized_text": "\n\n".join(hum_para_paras),
+                "humanized_text": hum_doc,
+                "humanized_paras_resolved": doc_paras,
             })
+
+        # ── Paragraph-mode ────────────────────────────────────────────────────
+        if include_para:
+            content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
+            if content_paras:
+                hum_para_content = _humanize_paragraphs(content_paras, model, log)
+                hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
+                _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
+
+                specs.append({
+                    "model": model,
+                    "mode": "para",
+                    "iter": iteration,
+                    "humanized_paras": hum_para_paras,
+                    "humanized_paras_resolved": hum_para_paras,
+                    "humanized_text": "\n\n".join(hum_para_paras),
+                })
 
     _stage(f"✓ Draft generation done • model={model} • iter={iteration+1}", log)
     return specs
 
 
 def _generate_all_drafts(models, iterations, orig_text, para_objs,
-                         log=None, *, include_para: bool = True):
+                         log=None, *, include_para: bool = True, 
+                         include_doc: bool = True, is_para_folder: bool = False):
     out: List[Dict] = []
     total_tasks = len(models) * iterations
     max_workers = min(HUMANIZER_MAX_WORKERS, total_tasks)
 
-    modes_lbl = "draft pairs" if include_para else "doc-only drafts"
+    if is_para_folder:
+        modes_lbl = "para-folder drafts"
+    elif include_doc and include_para:
+        modes_lbl = "draft pairs"
+    elif include_doc:
+        modes_lbl = "doc-only drafts"
+    else:
+        modes_lbl = "para-only drafts"
+        
     _stage(f"Generating {total_tasks} {modes_lbl}", log)
+    
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         fut_to_info = {}
         for m in models:
@@ -425,7 +459,10 @@ def _generate_all_drafts(models, iterations, orig_text, para_objs,
                 fut = pool.submit(
                     _generate_single_draft,
                     m, i, orig_text, para_objs,
-                    include_para=include_para, log=log,
+                    include_para=include_para, 
+                    include_doc=include_doc,
+                    is_para_folder=is_para_folder,
+                    log=log,
                 )
                 fut_to_info[fut] = (m, i)
 
@@ -501,7 +538,8 @@ def _assemble_per_para_stats(
 def run_test(doc_path: Path, models: List[str]|None=None,
              logger: Callable[[str],None]|None=None,
              iterations: int = REHUMANIZE_N,
-             max_retries: int = 5):
+             max_retries: int = 5,
+             include_doc_mode: bool = True):  # NEW parameter
     _stage("[Pipeline] run_test START", logger)
     _maybe_log("="*60, logger)
     _maybe_log(f"Processing document: {doc_path.name}", logger)
@@ -525,6 +563,8 @@ def run_test(doc_path: Path, models: List[str]|None=None,
     wc_before  = sum(len(p.split()) for p in orig_paras)
     models     = models or DEFAULT_HUMANIZER_MODELS
 
+    # Check if this is a para folder
+    is_para_folder = doc_path.parent.name in ("ai_paras", "human_paras")
 
     # Phase 1: Generation (with retries)
     _stage("Phase 1: Generation", logger)
@@ -535,11 +575,24 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                 _maybe_log(f"🔄 Retrying Phase 1 (attempt {attempt}/{max_retries})", logger)
                 time.sleep(min(30 * (attempt - 1), 120))  # exponential backoff: 30s, 60s, 120s
             
-            include_para = doc_path.parent.name not in ("ai_paras", "human_paras")
-            drafts = _generate_all_drafts(
-                models, iterations, orig_full, para_objs,
-                log=logger, include_para=include_para,
-            )
+            if is_para_folder:
+                # Para folders: only para mode with para prompt
+                drafts = _generate_all_drafts(
+                    models, iterations, orig_full, para_objs,
+                    log=logger, 
+                    include_para=False,  # Not regular para mode
+                    include_doc=False,   # Not doc mode
+                    is_para_folder=True, # Special handling
+                )
+            else:
+                # Regular folders: respect include_doc_mode setting
+                drafts = _generate_all_drafts(
+                    models, iterations, orig_full, para_objs,
+                    log=logger, 
+                    include_para=True,
+                    include_doc=include_doc_mode,
+                    is_para_folder=False,
+                )
             break  # Success, exit retry loop
             
         except KeyboardInterrupt:

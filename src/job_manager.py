@@ -55,26 +55,36 @@ def _get_conn():
 def init_db():
     """Initialize the jobs database."""
     with _get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                run_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                started_at REAL,
-                completed_at REAL,
-                total_docs INTEGER NOT NULL,
-                processed_docs INTEGER DEFAULT 0,
-                current_doc TEXT,
-                folders TEXT NOT NULL,
-                models TEXT NOT NULL,
-                iterations INTEGER NOT NULL,
-                doc_counts TEXT NOT NULL,
-                error TEXT,
-                results TEXT,
-                logs TEXT
-            )
-        """)
+        # Check if include_doc_mode column exists
+        cursor = conn.execute("PRAGMA table_info(jobs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'jobs' not in [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]:
+            # Create new table with include_doc_mode
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY,
+                    run_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    started_at REAL,
+                    completed_at REAL,
+                    total_docs INTEGER NOT NULL,
+                    processed_docs INTEGER DEFAULT 0,
+                    current_doc TEXT,
+                    folders TEXT NOT NULL,
+                    models TEXT NOT NULL,
+                    iterations INTEGER NOT NULL,
+                    doc_counts TEXT NOT NULL,
+                    include_doc_mode INTEGER DEFAULT 1,
+                    error TEXT,
+                    results TEXT,
+                    logs TEXT
+                )
+            """)
+        elif 'include_doc_mode' not in columns:
+            # Add column to existing table
+            conn.execute("ALTER TABLE jobs ADD COLUMN include_doc_mode INTEGER DEFAULT 1")
         
         # Create index for faster queries
         conn.execute("""
@@ -92,7 +102,8 @@ def create_job(
     models: List[str],
     iterations: int,
     doc_counts: Dict[str, int],
-    total_docs: int
+    total_docs: int,
+    include_doc_mode: bool = True
 ) -> str:
     """Create a new job and return its ID."""
     job_id = f"{run_name}_{int(time.time())}"
@@ -101,12 +112,12 @@ def create_job(
         conn.execute("""
             INSERT INTO jobs (
                 job_id, run_name, status, created_at, total_docs,
-                folders, models, iterations, doc_counts, logs
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                folders, models, iterations, doc_counts, include_doc_mode, logs
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             job_id, run_name, JobStatus.PENDING.value, time.time(), total_docs,
             json.dumps(folders), json.dumps(models), iterations,
-            json.dumps(doc_counts), json.dumps([])
+            json.dumps(doc_counts), int(include_doc_mode), json.dumps([])
         ))
         conn.commit()
     
@@ -184,7 +195,11 @@ def get_job(job_id: str) -> Optional[Dict]:
         cursor = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
         row = cursor.fetchone()
         if row:
-            return dict(row)
+            job_dict = dict(row)
+            # Convert include_doc_mode from int to bool
+            if 'include_doc_mode' in job_dict:
+                job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+            return job_dict
     return None
 
 def get_active_jobs() -> List[Dict]:
@@ -195,7 +210,14 @@ def get_active_jobs() -> List[Dict]:
             WHERE status IN (?, ?)
             ORDER BY created_at DESC
         """, (JobStatus.PENDING.value, JobStatus.RUNNING.value))
-        return [dict(row) for row in cursor.fetchall()]
+        jobs = []
+        for row in cursor.fetchall():
+            job_dict = dict(row)
+            # Convert include_doc_mode from int to bool
+            if 'include_doc_mode' in job_dict:
+                job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+            jobs.append(job_dict)
+        return jobs
 
 def get_recent_jobs(limit: int = 20) -> List[Dict]:
     """Get recent jobs of all statuses."""
@@ -205,7 +227,14 @@ def get_recent_jobs(limit: int = 20) -> List[Dict]:
             ORDER BY created_at DESC
             LIMIT ?
         """, (limit,))
-        return [dict(row) for row in cursor.fetchall()]
+        jobs = []
+        for row in cursor.fetchall():
+            job_dict = dict(row)
+            # Convert include_doc_mode from int to bool
+            if 'include_doc_mode' in job_dict:
+                job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+            jobs.append(job_dict)
+        return jobs
 
 def cancel_job(job_id: str) -> bool:
     """Cancel a pending or running job."""
@@ -243,14 +272,14 @@ def _run_benchmark_job(
     models: List[str],
     iterations: int,
     folders: List[str],
-    doc_counts: Dict[str, int]
+    doc_counts: Dict[str, int],
+    include_doc_mode: bool = True
 ):
     """Background worker function for running benchmarks."""
     try:
         # Update status to running
-        update_job_status(job_id, JobStatus.RUNNING, log_entry=f"Starting benchmark: {run_name}")
-        
-        results = []
+        doc_mode_str = "doc + para modes" if include_doc_mode else "para mode only"
+        update_job_status(job_id, JobStatus.RUNNING, log_entry=f"Starting benchmark: {run_name} ({doc_mode_str})")
         
         results = []
         processed_counter = 0
@@ -264,7 +293,8 @@ def _run_benchmark_job(
                     doc_path,
                     models,
                     lambda m: _job_logger(job_id, m),
-                    iterations,            # ← honour global setting
+                    iterations,
+                    include_doc_mode=include_doc_mode  # Pass the parameter
                 )
                 return doc_path, res, None
             except Exception as exc:
@@ -315,7 +345,12 @@ def _run_benchmark_job(
                 run_name,
                 folders,
                 models,
-                {"docs": results, "iterations": iterations, "doc_counts": doc_counts}
+                {
+                    "docs": results, 
+                    "iterations": iterations, 
+                    "doc_counts": doc_counts,
+                    "include_doc_mode": include_doc_mode
+                }
             )
             update_job_status(
                 job_id,
@@ -350,7 +385,8 @@ def start_benchmark_job(
     folders: List[str],
     models: List[str],
     iterations: int,
-    doc_counts: Dict[str, int]
+    doc_counts: Dict[str, int],
+    include_doc_mode: bool = True
 ) -> str:
     """Start a benchmark job in the background and return the job ID."""
     # Create job record
@@ -360,13 +396,14 @@ def start_benchmark_job(
         models=models,
         iterations=iterations,
         doc_counts=doc_counts,
-        total_docs=len(docs)
+        total_docs=len(docs),
+        include_doc_mode=include_doc_mode
     )
     
     # Start background thread
     thread = threading.Thread(
         target=_run_benchmark_job,
-        args=(job_id, run_name, docs, models, iterations, folders, doc_counts),
+        args=(job_id, run_name, docs, models, iterations, folders, doc_counts, include_doc_mode),
         daemon=True,
         name=f"benchmark-{job_id}"
     )

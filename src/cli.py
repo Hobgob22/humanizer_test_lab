@@ -63,10 +63,16 @@ def main():
         default=int(os.getenv("MAX_PARALLEL_DOCS", 4)),
         help="Maximum documents processed in parallel",
     )
+    ap.add_argument(
+        "--no-doc-mode",
+        action="store_true",
+        help="Disable document-level humanization for AI/Human texts folders (para mode only)",
+    )
 
     args = ap.parse_args()
 
     iterations = args.iters or REHUMANIZE_N
+    include_doc_mode = not args.no_doc_mode  # Convert to positive boolean
     models = (
         [m.strip() for m in args.models.split(",") if m.strip()]
         or list(MODEL_REGISTRY)
@@ -80,24 +86,27 @@ def main():
     print(f"Processing {len(docs)} documents sequentially")
     print(f"Models: {', '.join(models)} ({len(models)} total)")
     print(f"Iterations per model: {iterations}")
+    print(f"Document-level mode: {'Enabled' if include_doc_mode else 'Disabled (para mode only)'}")
     doc_only   = sum(1 for d in docs if d.parent.name.endswith("_paras"))
     both_modes = len(docs) - doc_only
 
     if both_modes and doc_only:
-        per_regular = len(models) * iterations * 2
+        # When doc mode is disabled, regular folders only get para mode
+        per_regular = len(models) * iterations * (2 if include_doc_mode else 1)
         per_para    = len(models) * iterations * 1
         print(f"Drafts per document: {per_regular} (regular folders), "
             f"{per_para} (*_paras folders)")
     else:
-        per_doc  = len(models) * iterations * (2 if both_modes else 1)
-        mode_lbl = "doc + para modes" if both_modes else "doc mode only"
+        # When doc mode is disabled, all documents get only 1 mode
+        per_doc  = len(models) * iterations * (2 if (both_modes and include_doc_mode) else 1)
+        mode_lbl = "doc + para modes" if (both_modes and include_doc_mode) else "para mode only"
         print(f"Total drafts per document: {per_doc} ({mode_lbl})")
         print("-" * 60)
     
     results = []
 
     def _worker(p: Path):
-        return p, run_test(p, models, _log, iterations)   # ← no override
+        return p, run_test(p, models, _log, iterations, include_doc_mode=include_doc_mode)
 
     try:
         with ThreadPoolExecutor(max_workers=args.max_parallel_docs) as pool:
