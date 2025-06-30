@@ -254,25 +254,25 @@ def humanize(
 
     variant = PROMPT_OVERRIDES.get(display_name)  # may be None
     system_prompt = _select_prompt(prompt_id, mode, variant=variant)
-
+    user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
     if provider == "openai":
         if not _openai_std:
             raise ValueError("OpenAI API key not configured")
-        return _openai_call(text, model_id, _openai_std, system_prompt)
+        return _openai_call(user_prompt, model_id, _openai_std, system_prompt)
     
     if provider == "openai_ft":
         if not _openai_ft:
             raise ValueError("Humanizer OpenAI API key not configured")
-        return _openai_call(text, model_id, _openai_ft, system_prompt)
+        return _openai_call(user_prompt, model_id, _openai_ft, system_prompt)
     
     if provider == "claude":
         if not _claude_client:
             raise ValueError("Claude API key not configured")
-        return _claude_call(text, model_id, system_prompt)
+        return _claude_call(user_prompt, model_id, system_prompt)
     
     if provider == "gemini":
         if not _gemini_client:
             raise ValueError("Gemini API key not configured")
-        return _gemini_call(text, model_id, system_prompt)
+        return _gemini_call(user_prompt, model_id, system_prompt)
 
     raise ValueError(f"Unknown provider '{provider}' for model {display_name}")
