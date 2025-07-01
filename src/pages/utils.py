@@ -1,21 +1,23 @@
-# src/pages/utils.py - Shared utilities and helpers
+# src/pages/utils.py
 from __future__ import annotations
 
 import re
 import time
 import threading
 import math
-from typing import Dict, List, Any
+from collections import defaultdict
 from pathlib import Path
+from typing import Any, Dict, List
+from urllib.parse import parse_qs, urlencode
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
 
 from src.config import ZERO_SHOT_THRESHOLD
 
-# ───────────────────────── Constants ───────────────────────
+# ───────────────────────── Gemini validation flags ─────────────────────────
 GEMINI_FLAGS = [
     "length_ok",
     "same_meaning",
@@ -24,16 +26,6 @@ GEMINI_FLAGS = [
     "citation_preserved",
     "citation_content_ok",
 ]
-
-# Color scheme for consistency
-COLORS = {
-    'primary': '#1f77b4',
-    'secondary': '#ff7f0e',
-    'success': '#2ca02c',
-    'danger': '#d62728',
-    'warning': '#ff9800',
-    'info': '#17a2b8'
-}
 
 # ─────────────────────────── live-log helpers ────────────────────────────
 _LOG: list[str] = []
@@ -51,216 +43,400 @@ def show_log(box):
     with _LOG_LOCK:
         box.text_area("Live log", "\n".join(_LOG[-400:]), height=300, disabled=True)
 
-# ────────────────────────── query-param helpers ───────────────────────────
-def qp_get(key: str, default=None):
-    val = st.query_params.get(key, default)
-    if isinstance(val, list):
-        return val[0] if val else default
-    return val
-
-def qp_set(**kwargs):
-    qp = dict(st.query_params)
-    for k, v in kwargs.items():
-        if v is None:
-            qp.pop(k, None)
-        else:
-            qp[k] = v
-    st.query_params = qp
-
-# Histogram helper --------------------------------------------------------
-def safe_hist(ax, data, *, bins: int = 20, **kwargs):
+# ───────────────────────── histogram safety wrapper ────────────────────────
+def safe_hist(ax, data, bins=20, **kwargs):
     """
-    Draw a histogram that *never* raises on zero-range input.
-
-    • Falls back to a single bin when all points are identical
-    • Limits the number of bins to the unique value count
+    Safely plot histogram even with identical values.
+    Falls back to single bar if all values are the same.
     """
     if not data:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return
-
-    arr = np.asarray(data, dtype=float)
-    if arr.size == 0:
-        return
-
-    xmin, xmax = np.nanmin(arr), np.nanmax(arr)
-    if not np.isfinite(xmin) or not np.isfinite(xmax):
-        return
-
-    if math.isclose(xmin, xmax):
-        ax.hist(arr, bins=1, **kwargs)
+    
+    data_range = max(data) - min(data)
+    if data_range == 0:
+        # All values identical
+        value = data[0]
+        width = abs(value) * 0.1 if value != 0 else 1
+        ax.bar([value], [len(data)], width=width, **kwargs)
+        ax.set_xlim(value - width * 2, value + width * 2)
     else:
-        bin_cnt = min(bins, len(np.unique(arr)))
-        ax.hist(arr, bins=bin_cnt, **kwargs)
+        # Normal histogram
+        ax.hist(data, bins=bins, **kwargs)
 
-# Helper for colored metrics
+# ─────────────────────── query-parameter helpers ─────────────────────────
+def qp_get(key: str, default: Any = None) -> Any:
+    """Read value from query-params; returns default if missing."""
+    qp = st.query_params
+    if key in qp:
+        val = qp[key]
+        # Handle various types
+        if val == "None" or val == "null":
+            return None
+        if val == "True":
+            return True
+        if val == "False":
+            return False
+        # Try to parse as int if it looks numeric
+        if val and isinstance(val, str) and val.isdigit():
+            try:
+                return int(val)
+            except:
+                pass
+        return val
+    return default
+
+def qp_set(**kwargs):
+    """Update multiple query params at once."""
+    current = dict(st.query_params)
+    current.update(kwargs)
+    # Clean up None values
+    current = {k: v for k, v in current.items() if v is not None}
+    st.query_params.update(current)
+
+# ─────────────────────── document listing ───────────────────────────────
+def list_docx_files(folder: Path) -> List[Path]:
+    return sorted(folder.glob("*.docx"), key=natural_key)
+
+# ─────────────────────── colored metric helper ───────────────────────────
 def colored_metric(label: str, value: str, delta: float = None, help_text: str = None):
-    """Display a metric with custom coloring for AI score differences"""
+    """Display a metric with colored delta indicator."""
     if delta is not None:
-        # For AI scores, negative is good (green), positive is bad (red)
         if delta < 0:
-            delta_color = "off"  # This will show green arrow
-            delta_str = f"{delta:+.3f}"
+            st.metric(label, value, f"{delta:.3f}", delta_color="inverse", help=help_text)
         elif delta > 0:
-            delta_color = "inverse"  # This will show red arrow
-            delta_str = f"{delta:+.3f}"
+            st.metric(label, value, f"+{delta:.3f}", delta_color="normal", help=help_text)
         else:
-            delta_color = "off"
-            delta_str = "0.000"
-        st.metric(label, value, delta_str, delta_color=delta_color, help=help_text)
+            st.metric(label, value, "0.000", help=help_text)
     else:
         st.metric(label, value, help=help_text)
 
-# ──────────────────────────────────────────────────────────────────────────
+# ─────────────────────── draft renderer ───────────────────────────────────
 def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
-    """Render individual draft with improved UI and colored metrics"""
-    wc_delta = draft["wordcount_after"] - draft["wordcount_before"]
-    sb = draft["scores_before"]["group_doc"]
-    sa = draft["scores_after"]["group_doc"]
-    mismatch = draft["para_mismatch"]
+    """Render a single draft with enhanced UI including grammar info."""
+    iter_num = draft.get("iter", 0) + 1
+    mode = draft.get("mode", "unknown")
     
-    # Calculate quality score
-    quality_score = 0
-    if not mismatch and draft.get("flag_counts"):
-        for flag in GEMINI_FLAGS:
-            quality_score += draft["flag_counts"].get(flag, 0)
-        quality_score = (quality_score / (len(GEMINI_FLAGS) * para_total)) * 100
+    # Get scores
+    gz_before = draft["scores_before"]["group_doc"]["gptzero"]
+    sp_before = draft["scores_before"]["group_doc"]["sapling"]
+    gz_after = draft["scores_after"]["group_doc"]["gptzero"]
+    sp_after = draft["scores_after"]["group_doc"]["sapling"]
     
-    # Create title with status indicators
-    status_emoji = "🔴" if mismatch else ("🟢" if quality_score > 80 else "🟡")
+    wc_before = draft.get("wordcount_before", 0)
+    wc_after = draft.get("wordcount_after", 0)
+    wc_delta = wc_after - wc_before
     
-    # Color code the deltas in the title
-    gz_delta = sa['gptzero'] - sb['gptzero']
-    sp_delta = sa['sapling'] - sb['sapling']
+    # Check for mismatch
+    para_mismatch = draft.get("para_mismatch", False)
     
-    gz_color = "🟢" if gz_delta < 0 else "🔴" if gz_delta > 0 else "⚪"
-    sp_color = "🟢" if sp_delta < 0 else "🔴" if sp_delta > 0 else "⚪"
+    # Draft header with iteration info
+    expander_title = f"🔄 Iteration {iter_num} • {mode.title()} mode"
+    if gz_after <= ZERO_SHOT_THRESHOLD or sp_after <= ZERO_SHOT_THRESHOLD:
+        expander_title += " • ✨ Zero-shot!"
     
-    # Check zero-shot success
-    gz_zeroshot = "✅" if sa['gptzero'] <= ZERO_SHOT_THRESHOLD else ""
-    sp_zeroshot = "✅" if sa['sapling'] <= ZERO_SHOT_THRESHOLD else ""
-    
-    title = (
-        f"{status_emoji} Draft {draft['iter']+1} | "
-        f"GZ: {sa['gptzero']:.2f} ({gz_color}{gz_delta:+.2f}) {gz_zeroshot} | "
-        f"SP: {sa['sapling']:.2f} ({sp_color}{sp_delta:+.2f}) {sp_zeroshot} | "
-        f"WC: {wc_delta:+d} | "
-        f"Quality: {quality_score:.0f}%"
-    )
-
-    with st.expander(title, expanded=False):
-        if mismatch:
-            st.error(f"⚠️ Paragraph count mismatch: {draft['para_count_before']} → {draft['para_count_after']}")
+    with st.expander(expander_title, expanded=True):
+        # Key metrics
+        cols = st.columns([2, 2, 2, 2, 2])
         
-        # Download button
-        fname = f"{doc_name}_{model}_d{draft['iter']+1}_{draft['mode']}.txt"
-        st.download_button(
-            "📥 Download draft",
-            draft["humanized_text"],
-            file_name=fname,
-            mime="text/plain",
-            key=f"dl_{doc_name}_{model}_{draft['mode']}_{draft['iter']}",
+        with cols[0]:
+            colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - gz_before)
+            if gz_after <= ZERO_SHOT_THRESHOLD:
+                st.success(f"✅ Zero-shot!")
+        
+        with cols[1]:
+            colored_metric("Sapling", f"{sp_after:.3f}", sp_after - sp_before)
+            if sp_after <= ZERO_SHOT_THRESHOLD:
+                st.success(f"✅ Zero-shot!")
+        
+        with cols[2]:
+            st.metric("Word Count Δ", f"{wc_delta:+d}")
+            st.caption(f"{wc_before} → {wc_after}")
+        
+        with cols[3]:
+            # Quality score calculation with grammar
+            if not para_mismatch and draft.get("flag_counts"):
+                # Calculate boolean quality (existing logic)
+                bool_quality = sum(draft["flag_counts"].get(f, 0) for f in GEMINI_FLAGS) / (para_total * len(GEMINI_FLAGS)) * 100
+                
+                # Get grammar score if available
+                grammar_score = draft["flag_counts"].get("grammar_score")
+                
+                if grammar_score is not None:
+                    # Composite score: 80% boolean checks + 20% grammar
+                    composite_quality = bool_quality * 0.8 + (grammar_score / 10) * 20
+                    st.metric("Quality", f"{composite_quality:.1f}%")
+                    # Convert grammar score to percentage
+                    grammar_pct = grammar_score * 10
+                    st.caption(f"Bool: {bool_quality:.0f}% | Grammar: {grammar_pct:.0f}%")
+                else:
+                    # Old runs without grammar
+                    st.metric("Quality", f"{bool_quality:.1f}%")
+                    st.caption("Legacy (no grammar)")
+            else:
+                st.metric("Quality", "—")
+                if para_mismatch:
+                    st.caption("Para mismatch")
+        
+        with cols[4]:
+            para_count_after = draft.get("para_count_after", 0)
+            if para_count_after != para_total:
+                st.metric("Paragraphs", f"{para_count_after}", f"{para_count_after - para_total:+d}")
+                st.warning("⚠️ Mismatch")
+            else:
+                st.metric("Paragraphs", f"{para_count_after}")
+                st.success("✅ Match")
+        
+        # Quality breakdown
+        if draft.get("flag_counts") and not para_mismatch:
+            st.divider()
+            st.markdown("##### Quality Breakdown")
+            
+            # Boolean flags
+            flag_cols = st.columns(len(GEMINI_FLAGS))
+            for idx, flag in enumerate(GEMINI_FLAGS):
+                count = draft["flag_counts"].get(flag, 0)
+                pct = (count / para_total * 100) if para_total else 0
+                with flag_cols[idx]:
+                    flag_name = flag.replace('_', ' ').title()
+                    if pct >= 90:
+                        st.success(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+                    elif pct >= 70:
+                        st.warning(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+                    else:
+                        st.error(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+            
+            # Grammar section (if available)
+            grammar_errors = draft["flag_counts"].get("grammar_errors", [])
+            if grammar_errors:
+                st.divider()
+                st.markdown("##### ⚠️ Grammar Issues")
+                error_summary = f"Found {len(grammar_errors)} grammar issue{'s' if len(grammar_errors) != 1 else ''}"
+                st.warning(error_summary)
+                
+                # Show errors in columns for better layout
+                error_cols = st.columns(2)
+                for idx, error in enumerate(grammar_errors):
+                    with error_cols[idx % 2]:
+                        st.markdown(f"• {error}")
+        
+        # Paragraph details
+        if draft.get("paragraph_details") and not para_mismatch:
+            st.divider()
+            st.markdown("##### 📊 Paragraph-by-paragraph analysis")
+            
+            para_data = []
+            for detail in draft["paragraph_details"]:
+                # Extract grammar info
+                grammar_score = detail.get("grammar_score")
+                grammar_errors = detail.get("grammar_errors", [])
+                
+                para_info = {
+                    "Para #": detail["paragraph"],
+                    "WC Before": detail["wc_before"],
+                    "WC After": detail["wc_after"],
+                    "WC Δ": detail["wc_after"] - detail["wc_before"],
+                    "GZ Before": f"{detail['ai_before']['gptzero']:.3f}" if detail['ai_before'].get('gptzero') is not None else "—",
+                    "GZ After": f"{detail['ai_after']['gptzero']:.3f}" if detail['ai_after'].get('gptzero') is not None else "—",
+                    "SP Before": f"{detail['ai_before']['sapling']:.3f}" if detail['ai_before'].get('sapling') is not None else "—",
+                    "SP After": f"{detail['ai_after']['sapling']:.3f}" if detail['ai_after'].get('sapling') is not None else "—",
+                }
+                
+                # Add quality flags
+                for flag in GEMINI_FLAGS:
+                    flag_name = flag.replace('_', ' ').title()
+                    para_info[flag_name] = "✅" if detail["flags"].get(flag, False) else "❌"
+                
+                # Add grammar info if available (as percentage)
+                if grammar_score is not None:
+                    grammar_pct = grammar_score * 10
+                    para_info["Grammar"] = f"{grammar_pct:.0f}%"
+                    if grammar_errors:
+                        para_info["Grammar Issues"] = f"{len(grammar_errors)} issue(s)"
+                
+                para_data.append(para_info)
+            
+            df = pd.DataFrame(para_data)
+            
+            # Apply styling
+            def style_delta(val):
+                if isinstance(val, (int, float)):
+                    if val < 0:
+                        return 'color: green; font-weight: bold'
+                    elif val > 0:
+                        return 'color: red; font-weight: bold'
+                return ''
+            
+            def style_grammar(val):
+                if isinstance(val, str) and val.endswith('%') and val != "—":
+                    try:
+                        pct = float(val.rstrip('%'))
+                        if pct >= 90:
+                            return 'color: green; font-weight: bold'
+                        elif pct >= 70:
+                            return 'color: orange'
+                        elif pct < 50:
+                            return 'color: red; font-weight: bold'
+                    except:
+                        pass
+                return ''
+            
+            style_cols = ['GZ Before', 'GZ After', 'SP Before', 'SP After', 'WC Δ']
+            flag_cols = [col for col in df.columns if col in [f.replace('_', ' ').title() for f in GEMINI_FLAGS]]
+            
+            styled_df = df.style
+            
+            # Apply delta styling
+            if 'WC Δ' in df.columns:
+                styled_df = styled_df.applymap(style_delta, subset=['WC Δ'])
+            
+            # Apply grammar styling
+            if 'Grammar' in df.columns:
+                styled_df = styled_df.applymap(style_grammar, subset=['Grammar'])
+            
+            # Apply flag styling
+            for col in flag_cols:
+                if col in df.columns:
+                    styled_df = styled_df.applymap(
+                        lambda x: 'background-color: #d4f8d4' if x == "✅" else 'background-color: #f8d4d4' if x == "❌" else '',
+                        subset=[col]
+                    )
+            
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        
+        # View humanized text
+        st.divider()
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown("##### 📝 Humanized text")
+        with col2:
+            # Download button
+            fname = f"{doc_name}_{model}_iter{iter_num}_{mode}.txt"
+            st.download_button(
+                "📥 Download",
+                draft.get("humanized_text", "No text available"),
+                file_name=fname,
+                mime="text/plain",
+                key=f"dl_{doc_name}_{model}_{mode}_{iter_num}"
+            )
+        
+        # Text area for viewing
+        st.text_area(
+            "Humanized version",
+            draft.get("humanized_text", "No text available"),
+            height=300,
+            disabled=True,
+            label_visibility="collapsed"
         )
         
-        if not mismatch:
-            # Quality summary with colored metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Paragraphs", para_total)
-            with col2:
-                colored_metric("GPTZero Change", f"{gz_delta:+.3f}", gz_delta)
-            with col3:
-                colored_metric("Sapling Change", f"{sp_delta:+.3f}", sp_delta)
-            with col4:
-                st.metric("Overall Quality", f"{quality_score:.1f}%")
-            
-            # Zero-shot indicators
-            if sa['gptzero'] <= ZERO_SHOT_THRESHOLD or sa['sapling'] <= ZERO_SHOT_THRESHOLD:
-                st.success(f"✅ Zero-shot success: " + 
-                          (f"GPTZero ({sa['gptzero']:.3f}) " if sa['gptzero'] <= ZERO_SHOT_THRESHOLD else "") +
-                          (f"Sapling ({sa['sapling']:.3f})" if sa['sapling'] <= ZERO_SHOT_THRESHOLD else ""))
-            
-            # Detailed paragraph analysis
-            if draft.get("paragraph_details"):
-                st.markdown("### 📊 Paragraph-by-Paragraph Analysis")
-                
-                rows = []
-                for p in draft["paragraph_details"]:
-                    # Calculate paragraph quality score
-                    para_quality = sum(1 for v in p["flags"].values() if v) / len(p["flags"]) * 100
-                    
-                    # Calculate deltas
-                    gz_delta_para = p['ai_after']['gptzero'] - p['ai_before']['gptzero']
-                    sp_delta_para = p['ai_after']['sapling'] - p['ai_before']['sapling']
-                    
-                    row = {
-                        "¶": p["paragraph"],
-                        "WC Δ": f"{p['wc_after'] - p['wc_before']:+d}",
-                        "GZ Before": f"{p['ai_before']['gptzero']:.2f}",
-                        "GZ After": f"{p['ai_after']['gptzero']:.2f}",
-                        "GZ Δ": gz_delta_para,
-                        "SP Before": f"{p['ai_before']['sapling']:.2f}",
-                        "SP After": f"{p['ai_after']['sapling']:.2f}",
-                        "SP Δ": sp_delta_para,
-                        "Quality": f"{para_quality:.0f}%",
-                    }
-                    
-                    # Add individual flag columns
-                    for flag in GEMINI_FLAGS:
-                        flag_names = {
-                            'length_ok': 'Length OK',
-                            'same_meaning': 'Same Meaning',
-                            'same_lang': 'Same Language',
-                            'no_missing_info': 'No Missing Info',
-                            'citation_preserved': 'Citation Preserved',
-                            'citation_content_ok': 'Citation Content OK'
-                        }
-                        flag_name = flag_names.get(flag, flag.replace('_', ' ').title())
-                        row[flag_name] = "✅" if p["flags"].get(flag, False) else "❌"
-                    
-                    rows.append(row)
-                
-                df = pd.DataFrame(rows)
-                
-                # Apply conditional formatting
-                def color_delta(val):
-                    if isinstance(val, (int, float)):
-                        if val < 0:
-                            return 'color: green; font-weight: bold'
-                        elif val > 0:
-                            return 'color: red; font-weight: bold'
-                    return ''
-                
-                styled_df = df.style.applymap(
-                    lambda x: 'color: green' if isinstance(x, str) and x.startswith('+') else ('color: red' if isinstance(x, str) and x.startswith('-') else ''),
-                    subset=['WC Δ']
-                ).applymap(
-                    color_delta,
-                    subset=['GZ Δ', 'SP Δ']
-                ).applymap(
-                    lambda x: 'background-color: #90EE90' if x == "✅" else 'background-color: #FFB6C1' if x == "❌" else '',
-                    subset=[col for col in df.columns if col in ['Length OK', 'Same Meaning', 'Same Language', 'No Missing Info', 'Citation Preserved', 'Citation Content OK']]
-                ).format({
-                    'GZ Δ': '{:+.3f}',
-                    'SP Δ': '{:+.3f}'
-                })
-                
-                st.dataframe(
-                    styled_df,
-                    use_container_width=True,
-                    height=min(400, 50 + len(rows) * 35)  # Dynamic height based on rows
-                )
+        # Debug info at the bottom
+        st.markdown("##### 🐛 Debug info")
+        debug_data = {
+            "model": model,
+            "mode": mode,
+            "iteration": iter_num,
+            "scores_before": draft.get("scores_before"),
+            "scores_after": draft.get("scores_after"),
+            "flag_counts": draft.get("flag_counts"),
+            "para_mismatch": draft.get("para_mismatch"),
+            "para_count_before": draft.get("para_count_before"),
+            "para_count_after": draft.get("para_count_after"),
+        }
+        st.json(debug_data)
 
 
+# ─────────────────────── run name generator ───────────────────────────────
+def generate_run_name(folders: List[str], models: List[str]) -> str:
+    """Generate a descriptive run name based on folders and models."""
+    import time
+    
+    # Shorten folder names
+    folder_parts = []
+    for f in folders[:2]:  # Max 2 folders in name
+        if "ai_texts" in f:
+            folder_parts.append("AI")
+        elif "human_texts" in f:
+            folder_parts.append("Human")
+        elif "ai_paras" in f:
+            folder_parts.append("AI-P")
+        elif "human_paras" in f:
+            folder_parts.append("Human-P")
+        else:
+            folder_parts.append(f[:6])
+    
+    # Shorten model names
+    model_parts = []
+    for m in models[:2]:  # Max 2 models in name
+        if "gpt" in m.lower():
+            model_parts.append("GPT")
+        elif "claude" in m.lower():
+            model_parts.append("Claude")
+        elif "gemini" in m.lower():
+            model_parts.append("Gemini")
+        else:
+            model_parts.append(m[:6])
+    
+    timestamp = time.strftime("%m%d_%H%M")
+    
+    folder_str = "+".join(folder_parts) if folder_parts else "NoFolder"
+    model_str = "+".join(model_parts) if model_parts else "NoModel"
+    
+    if len(models) > 2:
+        model_str += f"+{len(models)-2}more"
+    
+    return f"{folder_str}_{model_str}_{timestamp}"
+
+# ─────────────────────── progress helpers ───────────────────────────────
+def calculate_progress(log_history: List[str]) -> Dict[str, Any]:
+    """Calculate progress from log history."""
+    progress = {
+        "current_doc": 0,
+        "total_docs": 0,
+        "current_phase": "Starting",
+        "phase_progress": 0,
+        "current_action": "",
+    }
+    
+    # Parse log history
+    for line in log_history:
+        # Document progress
+        if "Processing document:" in line:
+            progress["current_doc"] += 1
+        
+        # Phase detection
+        if "Phase 1: Generation" in line:
+            progress["current_phase"] = "Phase 1: Generation"
+        elif "Phase 2: Detector scoring" in line:
+            progress["current_phase"] = "Phase 2: Detector scoring"
+        elif "Phase 3: Gemini quality" in line:
+            progress["current_phase"] = "Phase 3: Quality evaluation"
+        elif "Phase 4: Assembly" in line:
+            progress["current_phase"] = "Phase 4: Assembly"
+        
+        # Detailed progress
+        if "Progress:" in line and "/" in line:
+            try:
+                parts = line.split("Progress:")[1].strip().split()
+                if parts and "/" in parts[0]:
+                    current, total = parts[0].split("/")
+                    progress["phase_progress"] = int(current) / int(total)
+            except:
+                pass
+        
+        # Current action
+        if "▶️" in line:
+            progress["current_action"] = line.split("▶️")[1].strip()
+    
+    return progress
+
+# ─────────────────────── natural sorting ─────────────────────────
 _num = re.compile(r'(\d+)')
 
 def natural_key(p: Path | str):
     """
-    Split the filename into text/number chunks so that              │
-    'AI_text_100.docx' > 'AI_text_11.docx' > 'AI_text_2.docx'.      │
-    Works with Path objects *or* plain strings.                     │
+    Split the filename into text/number chunks so that
+    'AI_text_100.docx' > 'AI_text_11.docx' > 'AI_text_2.docx'.
+    Works with Path objects *or* plain strings.
     """
-    s = p.name if isinstance(p, Path) else p
-    return [int(tok) if tok.isdigit() else tok.lower()
-            for tok in _num.split(s)]
-
-
+    s = p.name if isinstance(p, Path) else str(p)
+    return [int(tok) if tok.isdigit() else tok.lower() for tok in _num.split(s)]

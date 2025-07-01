@@ -25,7 +25,7 @@ MODEL_REGISTRY = {
     "gemini-2.5-pro":        {"provider": "gemini", "model": "gemini-2.5-pro", "prompt_id": "default"},
 
     # ---- our fine-tunes -----------------------------------------------
-    "gpt-4o-old-model":          {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",                              "prompt_id": "finetuned"},
+    "gpt-4o-old-model":          {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",                              "prompt_id": "legacy-finetuned"},
 
     # differentiated codenames for fine-tunes created on 2024-08-06 and 2025-04-14
     "gpt-4o-hum30raw":           {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:hum30raw:BcCFkyvO",                                         "prompt_id": "finetuned"},

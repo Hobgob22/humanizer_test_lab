@@ -36,6 +36,8 @@ from ..models import MODEL_REGISTRY
 from ..prompts import (
     DEFAULT_DOC_SYSTEM_PROMPT,
     DEFAULT_PARA_SYSTEM_PROMPT,
+    LEGACY_FINETUNED_DOC_SYSTEM_PROMPT,
+    LEGACY_FINETUNED_PARA_SYSTEM_PROMPT,
     FINETUNED_DOC_SYSTEM_PROMPT1,
     FINETUNED_DOC_SYSTEM_PROMPT2,
     FINETUNED_PARA_SYSTEM_PROMPT1,
@@ -197,6 +199,12 @@ def _select_prompt(
     • Fine-tuned models → allow user-selected “v1” or “v2”
                          (fallback to legacy prompt if none supplied)
     """
+    if prompt_id == "legacy-finetuned":
+        return (
+            LEGACY_FINETUNED_PARA_SYSTEM_PROMPT
+            if mode == "doc"
+            else LEGACY_FINETUNED_DOC_SYSTEM_PROMPT
+        )
     if prompt_id == "default":
         return (
             DEFAULT_DOC_SYSTEM_PROMPT

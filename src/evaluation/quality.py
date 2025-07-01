@@ -1,11 +1,11 @@
 """
 Paragraph-quality checker with Gemini semantic validation.
 
-v3.3 - Enhanced citation handling for specific formats
-────
-• Improved citation detection for APA/Harvard, MLA, and Ref-style citations
-• Updated validation logic for citation preservation
-• Maintains all existing functionality
+v4.0 - Enhanced with grammar dimension
+─────
+• Added grammar quality scoring (1-10) and error detection
+• Maintains all existing functionality and backward compatibility
+• Enhanced citation handling for specific formats
 • Improved error handling and debugging
 """
 
@@ -37,12 +37,65 @@ else:
 QUALITY_SCHEMA = types.Schema(
     type=types.Type.OBJECT,
     properties={
-        "same_meaning": types.Schema(type=types.Type.BOOLEAN),
-        "same_lang": types.Schema(type=types.Type.BOOLEAN),
-        "no_missing_info": types.Schema(type=types.Type.BOOLEAN),
-        "citation_preserved": types.Schema(type=types.Type.BOOLEAN),
+        "same_meaning": types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "preserved": types.Schema(type=types.Type.BOOLEAN),
+                "confidence": types.Schema(type=types.Type.NUMBER),
+                "details": types.Schema(type=types.Type.STRING),
+            },
+            required=["preserved", "confidence", "details"],
+        ),
+        "same_lang": types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "consistent": types.Schema(type=types.Type.BOOLEAN),
+                "originalLanguage": types.Schema(type=types.Type.STRING),
+                "humanisedLanguage": types.Schema(type=types.Type.STRING),
+            },
+            required=["consistent", "originalLanguage", "humanisedLanguage"],
+        ),
+        "no_missing_info": types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "complete": types.Schema(type=types.Type.BOOLEAN),
+                "missingInfo": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                ),
+                "addedInfo": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                ),
+            },
+            required=["complete", "missingInfo", "addedInfo"],
+        ),
+        "citation_preserved": types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "preserved": types.Schema(type=types.Type.BOOLEAN),
+                "originalCount": types.Schema(type=types.Type.INTEGER),
+                "humanisedCount": types.Schema(type=types.Type.INTEGER),
+                "missingCitations": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                ),
+            },
+            required=["preserved", "originalCount", "humanisedCount", "missingCitations"],
+        ),
+        "grammar": types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "score": types.Schema(type=types.Type.INTEGER),
+                "errors": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                ),
+            },
+            required=["score", "errors"],
+        ),
     },
-    required=["same_meaning", "same_lang", "no_missing_info", "citation_preserved"],
+    required=["same_meaning", "same_lang", "no_missing_info", "citation_preserved", "grammar"],
 )
 
 
@@ -148,7 +201,7 @@ def _is_valid_citation(cite: str) -> bool:
     )
 
 
-def _parse_gemini_response(resp) -> Dict[str, bool]:
+def _parse_gemini_response(resp) -> Dict:
     """Parse Gemini's structured response into our expected format."""
     try:
         # support both direct JSON and candidate formats
@@ -161,15 +214,18 @@ def _parse_gemini_response(resp) -> Dict[str, bool]:
         data = json.loads(content) if isinstance(content, str) else content
         print(f"[quality._parse_gemini_response] Parsed data: {data}")
 
-        result: Dict[str, bool] = {}
-        for flag in _GEMINI_FLAGS:
-            result[flag] = bool(data.get(flag, False))
-        return result
+        return data  # Return the full nested structure
 
     except Exception as e:
         print(f"[quality._parse_gemini_response] Error parsing response: {e!r}")
-        # On parse failure, mark all false
-        return {flag: False for flag in _GEMINI_FLAGS}
+        # On parse failure, return safe defaults
+        return {
+            "same_meaning": {"preserved": False, "confidence": 0, "details": "Parse error"},
+            "same_lang": {"consistent": False, "originalLanguage": "unknown", "humanisedLanguage": "unknown"},
+            "no_missing_info": {"complete": False, "missingInfo": [], "addedInfo": []},
+            "citation_preserved": {"preserved": False, "originalCount": 0, "humanisedCount": 0, "missingCitations": []},
+            "grammar": {"score": 5, "errors": ["Parse error - could not evaluate"]}
+        }
 
 
 # ───────────────────────────── public API ────────────────────────────
@@ -186,7 +242,7 @@ def quality(original: str, humanized: str) -> Dict[str, bool]:
     len_orig = len(original.split())
     len_hum = len(humanized.split())
     word_delta = len_hum - len_orig
-    length_ok = -30 <= word_delta <= 10
+    length_ok = -15 <= word_delta <= 15
 
     orig_citations = _citations(original)
     hum_citations = _citations(humanized)
@@ -218,22 +274,33 @@ def quality(original: str, humanized: str) -> Dict[str, bool]:
             raise ValueError("No GEMINI_API_KEY configured")
 
         resp = _gemini_generate("gemini-2.0-flash", EVALUATION_PROMPT, text_pair)
-        gem_flags = _parse_gemini_response(resp)
-        print(f"[quality] Gemini evaluation: {gem_flags}")
+        gem_data = _parse_gemini_response(resp)
+        print(f"[quality] Gemini evaluation: {gem_data}")
 
     except Exception as e:
         print(f"[quality] Gemini evaluation failed: {e}")
-        gem_flags = {
-            "same_meaning": abs(word_delta) < 50,
-            "same_lang": True,
-            "no_missing_info": len_hum >= len_orig * 0.7,
-            "citation_preserved": citation_content_ok,
+        # Fallback with safe defaults
+        gem_data = {
+            "same_meaning": {"preserved": abs(word_delta) < 50, "confidence": 50, "details": "Fallback evaluation"},
+            "same_lang": {"consistent": True, "originalLanguage": "unknown", "humanisedLanguage": "unknown"},
+            "no_missing_info": {"complete": len_hum >= len_orig * 0.7, "missingInfo": [], "addedInfo": []},
+            "citation_preserved": {"preserved": citation_content_ok, "originalCount": len(orig_citations), 
+                                 "humanisedCount": len(hum_citations), "missingCitations": []},
+            "grammar": {"score": 10, "errors": []}  # Safe default for fallback
         }
-        print(f"[quality] Using fallback evaluation: {gem_flags}")
+        print(f"[quality] Using fallback evaluation: {gem_data}")
         if not GEMINI_API_KEY:
             print("[quality] Note: GEMINI_API_KEY not set - using heuristic evaluation")
 
-    # 3. Combine all checks
+    # 3. Combine all checks - extract boolean values from nested structure
+    gem_flags = {
+        "same_meaning": gem_data["same_meaning"]["preserved"],
+        "same_lang": gem_data["same_lang"]["consistent"],
+        "no_missing_info": gem_data["no_missing_info"]["complete"],
+        "citation_preserved": gem_data["citation_preserved"]["preserved"],
+    }
+
+    # Handle citation edge case
     if not orig_citations and not hum_citations:
         gem_flags["citation_preserved"] = True
 
@@ -241,12 +308,21 @@ def quality(original: str, humanized: str) -> Dict[str, bool]:
         "length_ok": length_ok,
         "citation_content_ok": citation_content_ok,
         **gem_flags,
+        # Add new grammar fields as top-level keys
+        "grammar_score": gem_data["grammar"]["score"],
+        "grammar_errors": gem_data["grammar"]["errors"],
     }
 
-    passed = sum(1 for v in result.values() if v)
-    print(f"[quality] Final result: {passed}/{len(result)} checks passed")
-    for flag, val in result.items():
+    # Count only boolean checks (not grammar_score/grammar_errors)
+    bool_flags = {k: v for k, v in result.items() if k not in ("grammar_score", "grammar_errors")}
+    passed = sum(1 for v in bool_flags.values() if v)
+    
+    print(f"[quality] Final result: {passed}/{len(bool_flags)} boolean checks passed, grammar score: {result['grammar_score']}/10")
+    for flag, val in bool_flags.items():
         print(f"[quality]   - {flag}: {'✓' if val else '✗'}")
+    print(f"[quality]   - grammar_score: {result['grammar_score']}/10")
+    if result['grammar_errors']:
+        print(f"[quality]   - grammar_errors: {result['grammar_errors']}")
     print("=" * 60 + "\n")
 
     return result

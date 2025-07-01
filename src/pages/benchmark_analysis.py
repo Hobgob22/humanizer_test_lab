@@ -8,7 +8,8 @@ from __future__ import annotations
 #        – Within 10 words %   – Within 20 words %
 #        – % Longer            – % Shorter
 #  • Per-folder word-count-delta histogram + summary
-#  • NEW: Merge multiple runs into a single view
+#  • Grammar quality scoring with percentage display
+#  • Merge multiple runs into a single view
 ###############################################################################
 
 import time
@@ -168,6 +169,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 "after_scores": [],
                 "wc_deltas": [],
                 "quality_flags": defaultdict(list),
+                "grammar_scores": [],  # NEW: track grammar scores
                 "draft_count": 0,
                 "mismatch_count": 0,
                 "zs_hits": {"gptzero": 0, "sapling": 0},
@@ -199,8 +201,23 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         bucket["series"]["after_gz"].append(gz)
         bucket["series"]["after_sp"].append(sp)
         bucket["series"]["wc"].append(delta_wc)
+        
+        # quality flags and grammar (skip drafts with paragraph mismatch)
         if not dr.get("para_mismatch", False):
             total = dr.get("para_count_before", 1)
+            
+            # Boolean quality flags
+            for flag in _EXPECTED_FLAGS:
+                cnt = dr.get("flag_counts", {}).get(flag, 0)
+                bucket["quality_flags"][flag].append((cnt / total) * 100 if total else 0)
+            
+            # Grammar score (NEW)
+            grammar_score = dr.get("flag_counts", {}).get("grammar_score")
+            if grammar_score is not None:
+                bucket["grammar_scores"].append(grammar_score)
+                bucket["series"]["grammar"].append(grammar_score)
+            
+            # Calculate overall quality percentage (boolean flags only for backward compatibility)
             qual_pct = (
                 sum(dr.get("flag_counts", {}).get(f, 0) for f in _EXPECTED_FLAGS)
                 / (total * len(_EXPECTED_FLAGS))
@@ -209,13 +226,6 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 else 0
             )
             bucket["series"]["quality"].append(qual_pct)
-
-        # quality flags (skip drafts with paragraph mismatch)
-        if not dr.get("para_mismatch", False):
-            total = dr.get("para_count_before", 1)
-            for flag in _EXPECTED_FLAGS:
-                cnt = dr.get("flag_counts", {}).get(flag, 0)
-                bucket["quality_flags"][flag].append((cnt / total) * 100 if total else 0)
 
         bucket["draft_count"] += 1
         if dr.get("para_mismatch", False):
@@ -247,6 +257,9 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 pct_longer = (deltas > 0).mean() * 100
                 pct_shorter = (deltas < 0).mean() * 100
 
+                # Grammar score average (NEW)
+                avg_grammar = np.mean(data["grammar_scores"]) if data["grammar_scores"] else None
+
                 result[folder][model][mode] = {
                     "baseline": baseline,
                     "after": {"gptzero": after_gz, "sapling": after_sp},
@@ -259,6 +272,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                         flag: np.mean(vals) if vals else 0
                         for flag, vals in data["quality_flags"].items()
                     },
+                    "grammar_score": avg_grammar,  # NEW
                     "draft_count": data["draft_count"],
                     "mismatch_rate": data["mismatch_count"] / data["draft_count"] * 100,
                     "zs_hits": data["zs_hits"],
@@ -288,6 +302,7 @@ def _compute_model_perf(
                 "gz_deltas": [],
                 "sp_deltas": [],
                 "quality": [],
+                "grammar_scores": [],  # NEW
                 "drafts": 0,
                 "zs_gz_hits": 0,
                 "zs_sp_hits": 0,
@@ -307,6 +322,11 @@ def _compute_model_perf(
                 if not (isinstance(s["deltas"]["sapling"], float) and np.isnan(s["deltas"]["sapling"])):
                     bucket["sp_deltas"].append(s["deltas"]["sapling"])
                 bucket["quality"].append(np.mean(list(s["quality"].values())))
+                
+                # Add grammar score if available (NEW)
+                if s.get("grammar_score") is not None:
+                    bucket["grammar_scores"].append(s["grammar_score"])
+                
                 bucket["drafts"] += s["draft_count"]
                 bucket["zs_gz_hits"] += s["zs_hits"]["gptzero"]
                 bucket["zs_sp_hits"] += s["zs_hits"]["sapling"]
@@ -319,20 +339,29 @@ def _compute_model_perf(
             m = modes.get(mode)
             if not m or m["drafts"] == 0:
                 continue
-            rows.append(
-                {
-                    "Model": model,
-                    "Mode": mode.title(),
-                    "Total Drafts": m["drafts"],
-                    "Avg Δ GZ": np.nanmean(m["gz_deltas"]) if m["gz_deltas"] else np.nan,
-                    "Avg Δ SP": np.nanmean(m["sp_deltas"]) if m["sp_deltas"] else np.nan,
-                    "Zero-shot GZ": f"{m['zs_gz_hits'] / m['drafts'] * 100:.1f}%",
-                    "Zero-shot SP": f"{m['zs_sp_hits'] / m['drafts'] * 100:.1f}%",
-                    "Avg Quality": f"{np.mean(m['quality']):.1f}%",
-                    "Folders": len(m["folders"]),
-                    "Source Runs": len(m["source_runs"]),
-                }
-            )
+            
+            # Calculate average grammar score as percentage (NEW)
+            avg_grammar = np.mean(m["grammar_scores"]) if m["grammar_scores"] else None
+            
+            row_data = {
+                "Model": model,
+                "Mode": mode.title(),
+                "Total Drafts": m["drafts"],
+                "Avg Δ GZ": np.nanmean(m["gz_deltas"]) if m["gz_deltas"] else np.nan,
+                "Avg Δ SP": np.nanmean(m["sp_deltas"]) if m["sp_deltas"] else np.nan,
+                "Zero-shot GZ": f"{m['zs_gz_hits'] / m['drafts'] * 100:.1f}%",
+                "Zero-shot SP": f"{m['zs_sp_hits'] / m['drafts'] * 100:.1f}%",
+                "Avg Quality": f"{np.mean(m['quality']):.1f}%",
+                "Avg Grammar": f"{avg_grammar * 10:.0f}%" if avg_grammar is not None else "—",  # Convert to %
+                "Folders": len(m["folders"]),
+            }
+            
+            # Only add Source Runs column if we have multiple sources
+            if len(m["source_runs"]) > 0:
+                row_data["Source Runs"] = len(m["source_runs"])
+                
+            rows.append(row_data)
+            
     return pd.DataFrame(rows)
 
 
@@ -359,7 +388,7 @@ def _describe(arr):
 def _build_extended_stats(stats):
     """
     Build DataFrame with descriptive statistics for
-    GPTZero, Sapling, word-count Δ and quality %.
+    GPTZero, Sapling, word-count Δ, quality %, and grammar score.
     """
     rows = []
     for folder, models in stats.items():
@@ -368,6 +397,11 @@ def _build_extended_stats(stats):
                 ser = s.get("series", {})
                 if not ser:
                     continue
+                    
+                # Convert grammar scores to percentages for display
+                grammar_series = ser.get("grammar", [])
+                grammar_pct_series = [g * 10 for g in grammar_series if g is not None]
+                
                 rows.append(
                     {
                         "Folder": folder,
@@ -377,6 +411,7 @@ def _build_extended_stats(stats):
                         **{f"Sapling {k}": v for k, v in _describe(ser.get("after_sp", [])).items()},
                         **{f"WC Δ {k}":  v for k, v in _describe(ser.get("wc", [])).items()},
                         **{f"Quality {k}": v for k, v in _describe(ser.get("quality", [])).items()},
+                        **{f"Grammar % {k}": v for k, v in _describe(grammar_pct_series).items()},  # NEW as %
                     }
                 )
     return pd.DataFrame(rows)
@@ -408,6 +443,21 @@ def _style_quality(v):
         if f >= 70:
             return "color: orange"
         return "color: red"
+    return ""
+
+def _style_grammar(v):
+    """Style grammar scores with color coding (now expects percentage format)."""
+    if isinstance(v, str) and v.endswith("%") and v != "—":
+        try:
+            score = float(v.rstrip("%"))
+            if score >= 90:
+                return "color: green; font-weight: bold"
+            elif score >= 70:
+                return "color: orange"
+            elif score < 50:
+                return "color: red; font-weight: bold"
+        except:
+            pass
     return ""
 
 # ╔════════════ word-count distribution plot ════════════════════════════╗
@@ -461,6 +511,7 @@ def _render_model_perf(df: pd.DataFrame, title_suffix: str = "") -> None:
     styled = (
         df.style.applymap(_style_delta, subset=["Avg Δ GZ", "Avg Δ SP"])
         .applymap(_style_zs, subset=["Zero-shot GZ", "Zero-shot SP"])
+        .applymap(_style_grammar, subset=["Avg Grammar"])  # NEW
         .format({"Avg Δ GZ": "{:.3f}", "Avg Δ SP": "{:.3f}"})
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -536,6 +587,7 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
                 "% Longer": f"{s['wc_diff']['pct_longer']:.1f}%",
                 "% Shorter": f"{s['wc_diff']['pct_shorter']:.1f}%",
                 "Quality %": f"{np.mean(list(s['quality'].values())):.1f}%",
+                "Grammar %": f"{s['grammar_score'] * 10:.0f}%" if s.get('grammar_score') is not None else "—",  # Convert to %
                 "Mismatch %": f"{s['mismatch_rate']:.1f}%",
             }
             # per-flag columns
@@ -550,7 +602,7 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
         "Baseline GZ","After GZ","Δ GZ","Zero-shot GZ",
         "Baseline SP","After SP","Δ SP","Zero-shot SP",
         "Avg WC Δ","Within 10 words %","Within 20 words %","% Longer","% Shorter",
-        "Quality %","Mismatch %",
+        "Quality %","Grammar %","Mismatch %",  # Grammar as %
     ]
     return pd.DataFrame(rows)[base_cols + qual_cols]
 
@@ -763,6 +815,7 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                 • **Δ GZ / Δ SP** – change in AI-detection score (negative = better)  
                 • **Zero-shot** – % drafts ≤ 10 % on detector  
                 • **Quality %** – average of all quality checks  
+                • **Grammar %** – average grammatical correctness score  
                 • **Within 10 / 20 words** – word-count distance from original  
                 • **% Longer / % Shorter** – drafts that grew / shrank  
                 • **Mismatch %** – paragraph-count mismatches
@@ -792,11 +845,12 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
 
                 # Style dataframe incl. new columns
                 qual_cols = [c for c in df.columns if c.endswith(" %") and c not in
-                             ("Zero-shot GZ","Zero-shot SP","Quality %","Mismatch %")]
+                             ("Zero-shot GZ","Zero-shot SP","Quality %","Grammar %","Mismatch %")]
                 styled_df = (
                     df.style.applymap(_style_delta, subset=["Δ GZ", "Δ SP"])
                     .applymap(_style_zs, subset=["Zero-shot GZ", "Zero-shot SP"])
                     .applymap(_style_quality, subset=qual_cols + ["Quality %"])
+                    .applymap(_style_grammar, subset=["Grammar %"])  # NEW
                     .format({"Δ GZ": "{:+.3f}", "Δ SP": "{:+.3f}"})
                 )
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
@@ -861,7 +915,7 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                     plt.tight_layout()
                     st.pyplot(fig)
 
-                # 2️⃣ Zero-shot & quality bars (unchanged)
+                # 2️⃣ Zero-shot & quality bars (updated with grammar)
                 with col2:
                     st.markdown("#### Zero-shot success & quality")
                     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
@@ -898,26 +952,58 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                     ax1.legend(fontsize="small")
                     ax1.grid(True, alpha=0.3)
 
-                    # quality
-                    qualities = [
-                        float(df[df["Model"] == m]["Quality %"].iloc[0].rstrip("%"))
-                        for m in models
-                    ]
-                    ax2.bar(
-                        x,
+                    # quality and grammar
+                    bar_width = 0.35
+                    qualities = []
+                    grammars = []
+                    
+                    for m in models:
+                        mdf = df[df["Model"] == m]
+                        if not mdf.empty:
+                            qual_val = float(mdf.iloc[0]["Quality %"].rstrip("%"))
+                            qualities.append(qual_val)
+                            
+                            gram_val = mdf.iloc[0]["Grammar %"]
+                            if gram_val != "—":
+                                grammars.append(float(gram_val.rstrip("%")))
+                            else:
+                                grammars.append(0)
+                        else:
+                            qualities.append(0)
+                            grammars.append(0)
+                    
+                    # Quality bars
+                    bars1 = ax2.bar(
+                        x - bar_width/2,
                         qualities,
-                        0.4,
+                        bar_width,
+                        label="Quality",
                         color=["green" if q >= 80 else "orange" if q >= 60 else "red" for q in qualities],
                     )
+                    
+                    # Grammar bars
+                    bars2 = ax2.bar(
+                        x + bar_width/2,
+                        grammars,
+                        bar_width,
+                        label="Grammar",
+                        color=["green" if g >= 90 else "orange" if g >= 70 else "red" if g > 0 else "gray" for g in grammars],
+                    )
+                    
                     ax2.set_ylim(0, 100)
                     ax2.set_xticks(x)
                     ax2.set_xticklabels(models, rotation=45, ha="right")
                     ax2.set_ylabel("%")
-                    ax2.set_title("Average quality")
+                    ax2.set_title("Average quality & grammar scores")
+                    ax2.legend()
                     ax2.grid(True, alpha=0.3)
 
                     plt.tight_layout()
                     st.pyplot(fig)
+
+                # Word-count distribution plot (NEW)
+                st.divider()
+                _plot_wordcount_distribution(detailed_stats, folder)
 
 
     with tab2:
@@ -927,6 +1013,7 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                 """
                 Compare humanizer models on different document sets.  
                 Lower **Δ GZ / Δ SP** values and higher **Zero-shot** rates are better.
+                Higher **Grammar %** indicates better grammatical quality.
                 """
             )
 
@@ -980,6 +1067,7 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             all_quality = []
             all_zero_shot_gz = []
             all_zero_shot_sp = []
+            all_grammar_scores = []  # NEW
             
             for model, modes in models.items():
                 for mode, stats in modes.items():
@@ -989,6 +1077,10 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                     all_quality.append(np.mean(list(stats["quality"].values())))
                     all_zero_shot_gz.append(stats["zero_shot_success"]["gptzero"])
                     all_zero_shot_sp.append(stats["zero_shot_success"]["sapling"])
+                    
+                    # Add grammar scores (NEW)
+                    if stats.get("grammar_score") is not None:
+                        all_grammar_scores.append(stats["grammar_score"])
             
             if total_drafts > 0:
                 folder_summary.append({
@@ -999,7 +1091,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                     "Avg Δ SP": np.nanmean(all_sp_deltas),
                     "Zero-shot GZ": f"{np.mean(all_zero_shot_gz):.1f}%",
                     "Zero-shot SP": f"{np.mean(all_zero_shot_sp):.1f}%",
-                    "Avg Quality": f"{np.mean(all_quality):.1f}%"
+                    "Avg Quality": f"{np.mean(all_quality):.1f}%",
+                    "Avg Grammar": f"{np.mean(all_grammar_scores) * 10:.0f}%" if all_grammar_scores else "—",  # NEW as %
                 })
         
         folder_df = pd.DataFrame(folder_summary)
@@ -1008,6 +1101,9 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             styled_folder = folder_df.style.applymap(
                 lambda x: 'color: green; font-weight: bold' if isinstance(x, (int, float)) and x < 0 else ('color: red; font-weight: bold' if isinstance(x, (int, float)) and x > 0 else ''),
                 subset=['Avg Δ GZ', 'Avg Δ SP']
+            ).applymap(
+                _style_grammar,
+                subset=['Avg Grammar']
             ).format({
                 'Avg Δ GZ': '{:.3f}',
                 'Avg Δ SP': '{:.3f}'
@@ -1070,10 +1166,20 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             ax2.legend()
             ax2.grid(True, alpha=0.3)
             
-            # Quality by folder
+            # Quality and Grammar by folder (UPDATED)
             quality_vals = [float(q.rstrip('%')) for q in folder_df['Avg Quality']]
-            bars5 = ax3.bar(folders, quality_vals, alpha=0.8)
+            grammar_vals = []
+            for g in folder_df['Avg Grammar']:
+                if g != "—":
+                    grammar_vals.append(float(g.rstrip('%')))
+                else:
+                    grammar_vals.append(0)
             
+            bar_width = 0.35
+            bars5 = ax3.bar(x - bar_width/2, quality_vals, bar_width, label='Quality', alpha=0.8)
+            bars6 = ax3.bar(x + bar_width/2, grammar_vals, bar_width, label='Grammar', alpha=0.8)
+            
+            # Color quality bars
             for bar, q in zip(bars5, quality_vals):
                 if q >= 80:
                     bar.set_color('green')
@@ -1082,14 +1188,28 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                 else:
                     bar.set_color('red')
             
+            # Color grammar bars
+            for bar, g in zip(bars6, grammar_vals):
+                if g >= 90:
+                    bar.set_color('green')
+                elif g >= 70:
+                    bar.set_color('orange')
+                elif g > 0:
+                    bar.set_color('red')
+                else:
+                    bar.set_color('gray')
+            
             ax3.set_xlabel('Folder')
-            ax3.set_ylabel('Average Quality Score (%)')
-            ax3.set_title('Average Quality Scores by Folder')
+            ax3.set_ylabel('Score (%)')
+            ax3.set_title('Average Quality and Grammar Scores by Folder')
+            ax3.set_xticks(x)
+            ax3.set_xticklabels(folders)
             ax3.set_ylim(0, 100)
+            ax3.legend()
             ax3.grid(True, alpha=0.3)
             
-            # Combined metric radar chart
-            categories = ['GZ Reduction', 'SP Reduction', 'ZS GZ', 'ZS SP', 'Quality']
+            # Combined metric radar chart (UPDATED with Grammar)
+            categories = ['GZ Reduction', 'SP Reduction', 'ZS GZ', 'ZS SP', 'Quality', 'Grammar']
             
             for i, folder_row in folder_df.iterrows():
                 # Normalize values for radar (0-1 scale)
@@ -1098,7 +1218,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                     max(0, -folder_row['Avg Δ SP'] / 0.5),
                     zs_gz_vals[i] / 100,
                     zs_sp_vals[i] / 100,
-                    quality_vals[i] / 100
+                    quality_vals[i] / 100,
+                    grammar_vals[i] / 100,  # NEW
                 ]
                 values += values[:1]  # Complete the circle
                 
@@ -1313,7 +1434,7 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
 
 # ──────────────────────────────────────────────────────────────────────────
 def _page_document(run_id: str, docs: List[Dict], doc_name: str):
-    """Enhanced document detail page with colored metrics"""
+    """Enhanced document detail page with colored metrics and grammar info"""
     doc = next((d for d in docs if d["document"] == doc_name), None)
     if not doc:
         st.error("Document not found")
@@ -1385,7 +1506,11 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
                     zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                     
-                    col1, col2, col3, col4 = st.columns(4)
+                    # Calculate average grammar score (NEW)
+                    grammar_scores = [d.get("flag_counts", {}).get("grammar_score") for d in valid_drafts if d.get("flag_counts", {}).get("grammar_score") is not None]
+                    avg_grammar = np.mean(grammar_scores) if grammar_scores else None
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
                     with col1:
                         colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
                     with col2:
@@ -1394,6 +1519,11 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                         st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
                     with col4:
                         st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(valid_drafts)} SP:{zero_shot_sp}/{len(valid_drafts)}")
+                    with col5:
+                        if avg_grammar is not None:
+                            st.metric("Avg Grammar", f"{avg_grammar * 10:.0f}%")
+                        else:
+                            st.metric("Avg Grammar", "—")
                 
                 # Individual drafts
                 for dr in sorted(model_drafts, key=lambda x: x.get("iter", 0)):
@@ -1420,7 +1550,11 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
                     zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                     
-                    col1, col2, col3, col4 = st.columns(4)
+                    # Calculate average grammar score (NEW)
+                    grammar_scores = [d.get("flag_counts", {}).get("grammar_score") for d in valid_drafts if d.get("flag_counts", {}).get("grammar_score") is not None]
+                    avg_grammar = np.mean(grammar_scores) if grammar_scores else None
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
                     with col1:
                         colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
                     with col2:
@@ -1429,6 +1563,11 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                         st.metric("Avg WC Δ", f"{avg_wc_delta:+.0f}")
                     with col4:
                         st.metric("Zero-shot", f"GZ:{zero_shot_gz}/{len(valid_drafts)} SP:{zero_shot_sp}/{len(valid_drafts)}")
+                    with col5:
+                        if avg_grammar is not None:
+                            st.metric("Avg Grammar", f"{avg_grammar * 10:.0f}%")
+                        else:
+                            st.metric("Avg Grammar", "—")
                 
                 # Individual drafts
                 for dr in sorted(model_drafts, key=lambda x: x.get("iter", 0)):
@@ -1445,6 +1584,7 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
             - **Δ GZ/SP**: Change from baseline (negative = improvement)
             - **Zero-shot**: Number of drafts achieving ≤10% AI detection
             - **Quality**: Average content preservation score
+            - **Grammar**: Average grammatical correctness score
             """)
         
         # Prepare comparison data
@@ -1465,11 +1605,19 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     
                     # Calculate average quality
                     quality_scores = []
+                    grammar_scores = []
                     for d in valid_drafts:
                         if not d.get("para_mismatch", False) and d.get("flag_counts"):
-                            score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
+                            score = sum(d["flag_counts"].get(f, 0) for f in GEMINI_FLAGS) / (len(GEMINI_FLAGS) * para_total) * 100
                             quality_scores.append(score)
+                            
+                            # Grammar score
+                            gs = d["flag_counts"].get("grammar_score")
+                            if gs is not None:
+                                grammar_scores.append(gs)
+                    
                     avg_quality = np.mean(quality_scores) if quality_scores else 0
+                    avg_grammar = np.mean(grammar_scores) if grammar_scores else None
                     
                     comparison_data.append({
                         "Model": model,
@@ -1482,7 +1630,8 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                         "Δ SP": avg_sp - baseline_sp,
                         "Zero-shot SP": f"{zero_shot_sp}/{len(valid_drafts)}",
                         "Avg WC Δ": f"{avg_wc:+.0f}",
-                        "Avg Quality": f"{avg_quality:.1f}%"
+                        "Avg Quality": f"{avg_quality:.1f}%",
+                        "Avg Grammar": f"{avg_grammar * 10:.0f}%" if avg_grammar is not None else "—"
                     })
         
         comparison_df = pd.DataFrame(comparison_data)
@@ -1499,6 +1648,8 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
             
             styled_comparison = comparison_df.style.applymap(
                 style_delta, subset=['Δ GZ', 'Δ SP']
+            ).applymap(
+                _style_grammar, subset=['Avg Grammar']
             ).format({
                 'Δ GZ': '{:+.3f}',
                 'Δ SP': '{:+.3f}'
@@ -1601,37 +1752,62 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                 st.pyplot(fig)
             
             with col2:
-                st.markdown("#### Quality Score by Model & Mode")
+                st.markdown("#### Quality & Grammar Scores by Model & Mode")
                 fig, ax = plt.subplots(figsize=(8, 6))
                 
                 doc_quality = []
+                doc_grammar = []
                 para_quality = []
+                para_grammar = []
                 
                 for model in models:
-                    # Doc mode quality
+                    # Doc mode
                     doc_drafts = by_model[model]["doc"]
                     doc_q_scores = []
+                    doc_g_scores = []
                     for d in doc_drafts:
                         if not d.get("para_mismatch", False) and d.get("flag_counts"):
-                            score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
+                            score = sum(d["flag_counts"].get(f, 0) for f in GEMINI_FLAGS) / (len(GEMINI_FLAGS) * para_total) * 100
                             doc_q_scores.append(score)
-                    doc_quality.append(np.mean(doc_q_scores) if doc_q_scores else 0)
+                            
+                            gs = d["flag_counts"].get("grammar_score")
+                            if gs is not None:
+                                doc_g_scores.append(gs * 10)  # Convert to %
                     
-                    # Para mode quality
+                    doc_quality.append(np.mean(doc_q_scores) if doc_q_scores else 0)
+                    doc_grammar.append(np.mean(doc_g_scores) if doc_g_scores else 0)
+                    
+                    # Para mode
                     para_drafts = by_model[model]["para"]
                     para_q_scores = []
+                    para_g_scores = []
                     for d in para_drafts:
                         if not d.get("para_mismatch", False) and d.get("flag_counts"):
-                            score = sum(d["flag_counts"].values()) / (len(GEMINI_FLAGS) * para_total) * 100
+                            score = sum(d["flag_counts"].get(f, 0) for f in GEMINI_FLAGS) / (len(GEMINI_FLAGS) * para_total) * 100
                             para_q_scores.append(score)
+                            
+                            gs = d["flag_counts"].get("grammar_score")
+                            if gs is not None:
+                                para_g_scores.append(gs * 10)  # Convert to %
+                    
                     para_quality.append(np.mean(para_q_scores) if para_q_scores else 0)
+                    para_grammar.append(np.mean(para_g_scores) if para_g_scores else 0)
                 
-                ax.bar(x - width/2, doc_quality, width, label='Doc Mode', alpha=0.8)
-                ax.bar(x + width/2, para_quality, width, label='Para Mode', alpha=0.8)
+                # Create grouped bar chart
+                bar_width = 0.2
+                r1 = x - bar_width * 1.5
+                r2 = x - bar_width * 0.5
+                r3 = x + bar_width * 0.5
+                r4 = x + bar_width * 1.5
+                
+                ax.bar(r1, doc_quality, bar_width, label='Doc Quality', color='blue', alpha=0.8)
+                ax.bar(r2, doc_grammar, bar_width, label='Doc Grammar', color='cyan', alpha=0.8)
+                ax.bar(r3, para_quality, bar_width, label='Para Quality', color='green', alpha=0.8)
+                ax.bar(r4, para_grammar, bar_width, label='Para Grammar', color='lime', alpha=0.8)
                 
                 ax.set_xlabel('Model')
-                ax.set_ylabel('Quality Score (%)')
-                ax.set_title('Average Quality Scores by Model and Mode')
+                ax.set_ylabel('Score (%)')
+                ax.set_title('Quality and Grammar Scores by Model and Mode')
                 ax.set_xticks(x)
                 ax.set_xticklabels(models, rotation=45, ha='right')
                 ax.legend()
@@ -1772,3 +1948,62 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
             st.pyplot(fig)
         else:
             st.info("No quality data available for heatmap visualization")
+        
+        # Grammar progression chart (NEW)
+        st.markdown("#### Grammar Score Progression")
+        st.caption("Shows how grammar scores vary across iterations")
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Doc mode grammar
+        for model in sorted(by_model):
+            doc_drafts = [d for d in by_model[model]["doc"] if "scores_after" in d and not d.get("para_mismatch", False)]
+            doc_drafts = sorted(doc_drafts, key=lambda x: x.get("iter", 0))
+            
+            grammar_scores = []
+            iterations = []
+            for d in doc_drafts:
+                gs = d.get("flag_counts", {}).get("grammar_score")
+                if gs is not None:
+                    grammar_scores.append(gs * 10)  # Convert to %
+                    iterations.append(d.get("iter", 0) + 1)
+            
+            if grammar_scores:
+                ax1.plot(iterations, grammar_scores, marker='o', label=model)
+        
+        ax1.axhline(90, color='green', linestyle=':', alpha=0.5, label='Excellent (90%)')
+        ax1.axhline(70, color='orange', linestyle=':', alpha=0.5, label='Good (70%)')
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('Grammar Score (%)')
+        ax1.set_title('Document Mode - Grammar Score Progression')
+        ax1.set_ylim(0, 100)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Para mode grammar
+        for model in sorted(by_model):
+            para_drafts = [d for d in by_model[model]["para"] if "scores_after" in d and not d.get("para_mismatch", False)]
+            para_drafts = sorted(para_drafts, key=lambda x: x.get("iter", 0))
+            
+            grammar_scores = []
+            iterations = []
+            for d in para_drafts:
+                gs = d.get("flag_counts", {}).get("grammar_score")
+                if gs is not None:
+                    grammar_scores.append(gs * 10)  # Convert to %
+                    iterations.append(d.get("iter", 0) + 1)
+            
+            if grammar_scores:
+                ax2.plot(iterations, grammar_scores, marker='o', label=model)
+        
+        ax2.axhline(90, color='green', linestyle=':', alpha=0.5, label='Excellent (90%)')
+        ax2.axhline(70, color='orange', linestyle=':', alpha=0.5, label='Good (70%)')
+        ax2.set_xlabel('Iteration')
+        ax2.set_ylabel('Grammar Score (%)')
+        ax2.set_title('Paragraph Mode - Grammar Score Progression')
+        ax2.set_ylim(0, 100)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)

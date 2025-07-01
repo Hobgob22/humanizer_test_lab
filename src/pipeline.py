@@ -518,20 +518,40 @@ def _assemble_per_para_stats(
     quality_results: Dict[Tuple[str, str], Dict[str, bool]],
 ):
     flags_total = {k: 0 for k in _EXPECTED_FLAGS}
+    grammar_scores = []
+    all_grammar_errors = []
     details: List[Dict] = []
 
     for idx, (o, h) in enumerate(zip(orig, hum)):
         raw = quality_results.get((_hash(o), _hash(h)), {})
+        
+        # Extract boolean flags (backward compatible)
         p_flags = {k: bool(raw.get(k, False)) for k in _EXPECTED_FLAGS}
         for k, v in p_flags.items():
             if v: flags_total[k] += 1
+        
+        # Extract grammar info (new fields)
+        grammar_score = raw.get("grammar_score", None)
+        grammar_errors = raw.get("grammar_errors", [])
+        
+        if grammar_score is not None:
+            grammar_scores.append(grammar_score)
+        all_grammar_errors.extend(grammar_errors)
+        
         details.append({
             "paragraph": idx + 1,
             "wc_before": len(o.split()), "wc_after": len(h.split()),
             "ai_before": {d: ai_before.get(d, [None]*len(orig))[idx] for d in ("gptzero","sapling")},
             "ai_after":  {d: ai_after.get(d, [None]*len(orig))[idx] for d in ("gptzero","sapling")},
             "flags": p_flags,
+            "grammar_score": grammar_score,
+            "grammar_errors": grammar_errors,
         })
+    
+    # Add aggregate grammar info to flag counts (backward compatible)
+    flags_total["grammar_score"] = sum(grammar_scores) / len(grammar_scores) if grammar_scores else None
+    flags_total["grammar_errors"] = all_grammar_errors
+    
     return details, flags_total
 
 # ═══════════════ 10 · Main runner ════════════════════════════════

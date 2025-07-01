@@ -102,6 +102,16 @@ DEFAULT_SYSTEM_PROMPT: str = DEFAULT_PARA_SYSTEM_PROMPT
 # ───────────────────────── fine-tuned prompts ─────────────────────────
 
 # System prompt used when fine-tuning for full-document rewrites
+LEGACY_FINETUNED_DOC_SYSTEM_PROMPT: str = """
+You are a humanizer model. The User will send you a text, and your task is to rewrite this text in a way that sounds more human-like and natural. Do not add new information, just rewrite the text sent by the user. If there are in-text citations or any text in parentheses, preserve it as-is. Don't add in-text citations or text in parentheses if the user hasn't sent any. The length of the output must be the same as the input.
+"""
+
+# System prompt used when fine-tuning for single-paragraph rewrites
+LEGACY_FINETUNED_PARA_SYSTEM_PROMPT: str = """
+You are a humanizer model. The User will send you a text, and your task is to rewrite this text in a way that sounds more human-like and natural. Do not add new information, just rewrite the text sent by the user. If there are in-text citations or any text in parentheses, preserve it as-is. Don't add in-text citations or text in parentheses if the user hasn't sent any. The length of the output must be the same as the input.
+"""
+
+# System prompt used when fine-tuning for full-document rewrites
 FINETUNED_DOC_SYSTEM_PROMPT1: str = """
 You are a fine-tuned humanizer for full-document rewrites.
 Your goal is to make the text read naturally, as if written by a person, while **strictly preserving**:
@@ -133,14 +143,56 @@ FINETUNED_PARA_SYSTEM_PROMPT2: str = """
 You are an expert at rewriting AI-generated text to sound more human and natural while preserving all meaning, facts, and (Ref-XXXX) citations exactly. Your goal is to make the text flow naturally while keeping all information intact.
 """
 
+# ───────────────────────── Updated evaluation prompt ─────────────────────────
 EVALUATION_PROMPT = """
+You are a comprehensive text quality evaluator. Your task is to analyse and compare two texts: an original text and a humanised version.
+
+Evaluate the humanised text on the following five dimensions:
+
+1. **Meaning preservation** – does it convey the same idea?
+2. **Language consistency** – are both texts in the same language?
+3. **Information completeness** – is anything missing or added?
+4. **Citation preservation** – are all citations kept exactly?
+5. **Grammar quality** – overall grammatical correctness (1 = very poor, 10 = perfect) and a list of concrete errors, if any.
+
+Return *only* the following JSON (nothing else):
+
+{
+  "same_meaning": {
+    "preserved": <boolean>,
+    "confidence": <number 0-100>,
+    "details": "<short explanation>"
+  },
+  "same_lang": {
+    "consistent": <boolean>,
+    "originalLanguage": "<language>",
+    "humanisedLanguage": "<language>"
+  },
+  "no_missing_info": {
+    "complete": <boolean>,
+    "missingInfo": ["<items>"],
+    "addedInfo": ["<items>"]
+  },
+  "citation_preserved": {
+    "preserved": <boolean>,
+    "originalCount": <int>,
+    "humanisedCount": <int>,
+    "missingCitations": ["<citations>"]
+  },
+  "grammar": {
+    "score": <integer 1-10>,
+    "errors": ["<grammar error descriptions>"]
+  }
+}
+"""
+
+# ───────────────────────── Legacy evaluation prompt (for reference) ─────────────────────────
+EVALUATION_PROMPT_LEGACY = """
 You will receive ORIGINAL text and its HUMANIZED rewrite.
 
 Your task is to evaluate whether the humanized version preserves key elements from the original.
 
 Pay special attention to citations, which appear in parentheses and may include:
-- APA/Harvard style: (Smith, 2021), (Pearse et al., 2001), (Brown & Garcia, 2018)
-- MLA style: (Brown), (Smith 23), (Johnson 45), (Lee 208), (Nguyen 59–60)
 - Reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001) where f/u/s are prefixes followed by 6 digits
 
 Return *pure JSON* with exactly these keys (all boolean):
