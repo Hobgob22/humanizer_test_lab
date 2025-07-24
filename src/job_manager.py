@@ -104,7 +104,9 @@ def create_job(
     iterations: int,
     doc_counts: Dict[str, int],
     total_docs: int,
-    include_doc_mode: bool = True
+    include_doc_mode: bool = True,
+    use_gptzero: bool = True,
+    use_sapling: bool = True
 ) -> str:
     """Create a new job and return its ID."""
     job_id = f"{run_name}_{int(time.time())}"
@@ -274,7 +276,9 @@ def _run_benchmark_job(
     iterations: int,
     folders: List[str],
     doc_counts: Dict[str, int],
-    include_doc_mode: bool = True
+    include_doc_mode: bool = True,
+    use_gptzero: bool = True,
+    use_sapling: bool = True
 ):
     """Background worker function for running benchmarks."""
     try:
@@ -295,7 +299,9 @@ def _run_benchmark_job(
                     models,
                     lambda m: _job_logger(job_id, m),
                     iterations,
-                    include_doc_mode=include_doc_mode  # Pass the parameter
+                    include_doc_mode=include_doc_mode,  # Pass the humanization mode parameter
+                    use_gptzero=use_gptzero,           # Pass detector selection
+                    use_sapling=use_sapling            # Pass detector selection
                 )
                 return doc_path, res, None
             except Exception as exc:
@@ -353,7 +359,9 @@ def _run_benchmark_job(
                         "docs": results, 
                         "iterations": iterations, 
                         "doc_counts": doc_counts,
-                        "include_doc_mode": include_doc_mode
+                        "include_doc_mode": include_doc_mode,
+                        "use_gptzero": use_gptzero,
+                        "use_sapling": use_sapling
                     }
                 )
                 update_job_status(
@@ -399,7 +407,9 @@ def start_benchmark_job(
     models: List[str],
     iterations: int,
     doc_counts: Dict[str, int],
-    include_doc_mode: bool = True
+    include_doc_mode: bool = True,
+    use_gptzero: bool = True,
+    use_sapling: bool = True
 ) -> str:
     """Start a benchmark job in the background and return the job ID."""
     # Create job record
@@ -410,13 +420,15 @@ def start_benchmark_job(
         iterations=iterations,
         doc_counts=doc_counts,
         total_docs=len(docs),
-        include_doc_mode=include_doc_mode
+        include_doc_mode=include_doc_mode,
+        use_gptzero=use_gptzero,
+        use_sapling=use_sapling
     )
     
     # Start background thread
     thread = threading.Thread(
         target=_run_benchmark_job,
-        args=(job_id, run_name, docs, models, iterations, folders, doc_counts, include_doc_mode),
+        args=(job_id, run_name, docs, models, iterations, folders, doc_counts, include_doc_mode, use_gptzero, use_sapling),
         daemon=True,
         name=f"benchmark-{job_id}"
     )

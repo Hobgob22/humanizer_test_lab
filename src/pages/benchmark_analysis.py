@@ -203,9 +203,11 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         gz = dr["scores_after"]["group_doc"].get("gptzero", 0)
         sp = dr["scores_after"]["group_doc"].get("sapling", 0)
         bucket["after_scores"].append({"gptzero": gz, "sapling": sp})
-        if gz <= ZERO_SHOT_THRESHOLD:
+        
+        # Only check zero-shot threshold if detector was actually used (not None)
+        if gz is not None and gz <= ZERO_SHOT_THRESHOLD:
             bucket["zs_hits"]["gptzero"] += 1
-        if sp <= ZERO_SHOT_THRESHOLD:
+        if sp is not None and sp <= ZERO_SHOT_THRESHOLD:
             bucket["zs_hits"]["sapling"] += 1
 
         # word-count delta
@@ -1618,8 +1620,13 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                 continue
 
             st.markdown(f"### 📁 {folder.replace('_', ' ').title()}")
-            base_gz = np.mean(folder_baselines[folder]["gz"]) if folder_baselines[folder]["gz"] else None
-            base_sp = np.mean(folder_baselines[folder]["sp"]) if folder_baselines[folder]["sp"] else None
+            
+            # Filter out None values for disabled detectors before calculating means
+            gz_baselines = [x for x in folder_baselines[folder]["gz"] if x is not None]
+            sp_baselines = [x for x in folder_baselines[folder]["sp"] if x is not None]
+            
+            base_gz = np.mean(gz_baselines) if gz_baselines else None
+            base_sp = np.mean(sp_baselines) if sp_baselines else None
 
             # ----------  A. folder-level detector distributions  ----------
             with st.expander("Overall detector-score distributions", expanded=False):
@@ -1829,13 +1836,17 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
             valid_drafts = [d for d in drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
             
             if valid_drafts:
-                avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
-                avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
+                # Filter out None values for disabled detectors
+                gz_scores = [d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] is not None]
+                sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] is not None]
+                
+                avg_gz = np.mean(gz_scores) if gz_scores else None
+                avg_sp = np.mean(sp_scores) if sp_scores else None
                 avg_wc = np.mean([d.get("wordcount_after", 0) - d.get("wordcount_before", 0) for d in valid_drafts])
                 
-                # Count zero-shot successes
-                zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
-                zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+                # Count zero-shot successes (only for enabled detectors)
+                zero_shot_gz = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] is not None and d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD)
+                zero_shot_sp = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] is not None and d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
                 
                 # Calculate average quality
                 quality_scores = []
@@ -1938,15 +1949,29 @@ def _render_document_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: f
         # Model summary metrics
         valid_drafts = [d for d in model_drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
         if valid_drafts:
-            avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
-            avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
-            zero_shot_count = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD or d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+            # Filter out None values for disabled detectors
+            gz_scores = [d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] is not None]
+            sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] is not None]
+            
+            avg_gz = np.mean(gz_scores) if gz_scores else None
+            avg_sp = np.mean(sp_scores) if sp_scores else None
+            
+            # Count zero-shot successes (only for enabled detectors)
+            zero_shot_count = sum(1 for d in valid_drafts if 
+                                 (d["scores_after"]["group_doc"]["gptzero"] is not None and d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD) or
+                                 (d["scores_after"]["group_doc"]["sapling"] is not None and d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD))
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                if avg_gz is not None:
+                    colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                else:
+                    st.metric("Avg GPTZero", "N/A", help="GPTZero detector was disabled")
             with col2:
-                colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                if avg_sp is not None:
+                    colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                else:
+                    st.metric("Avg Sapling", "N/A", help="Sapling detector was disabled")
             with col3:
                 st.metric("Zero-shot Success", f"{zero_shot_count}/{len(valid_drafts)}")
             with col4:
@@ -1957,11 +1982,18 @@ def _render_document_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: f
             iter_num = draft.get("iter", 0) + 1
             draft_title = f"🔄 **Iteration {iter_num}** - Document Mode"
             
-            # Check for zero-shot success
-            gz_after = draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 1.0)
-            sp_after = draft.get("scores_after", {}).get("group_doc", {}).get("sapling", 1.0)
+            # Check for zero-shot success (handle None values for disabled detectors)
+            gz_after = draft.get("scores_after", {}).get("group_doc", {}).get("gptzero")
+            sp_after = draft.get("scores_after", {}).get("group_doc", {}).get("sapling")
             
-            if gz_after <= ZERO_SHOT_THRESHOLD or sp_after <= ZERO_SHOT_THRESHOLD:
+            # Check zero-shot success only for enabled detectors
+            is_zero_shot = False
+            if gz_after is not None and gz_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            elif sp_after is not None and sp_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            
+            if is_zero_shot:
                 draft_title += " ✨ **ZERO-SHOT SUCCESS!**"
             
             st.markdown(draft_title)
@@ -2010,15 +2042,29 @@ def _render_paragraph_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: 
         # Model summary metrics (same as document mode)
         valid_drafts = [d for d in model_drafts if "scores_after" in d and "group_doc" in d["scores_after"]]
         if valid_drafts:
-            avg_gz = np.mean([d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts])
-            avg_sp = np.mean([d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts])
-            zero_shot_count = sum(1 for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD or d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD)
+            # Filter out None values for disabled detectors
+            gz_scores = [d["scores_after"]["group_doc"]["gptzero"] for d in valid_drafts if d["scores_after"]["group_doc"]["gptzero"] is not None]
+            sp_scores = [d["scores_after"]["group_doc"]["sapling"] for d in valid_drafts if d["scores_after"]["group_doc"]["sapling"] is not None]
+            
+            avg_gz = np.mean(gz_scores) if gz_scores else None
+            avg_sp = np.mean(sp_scores) if sp_scores else None
+            
+            # Count zero-shot successes (only for enabled detectors)
+            zero_shot_count = sum(1 for d in valid_drafts if 
+                                 (d["scores_after"]["group_doc"]["gptzero"] is not None and d["scores_after"]["group_doc"]["gptzero"] <= ZERO_SHOT_THRESHOLD) or
+                                 (d["scores_after"]["group_doc"]["sapling"] is not None and d["scores_after"]["group_doc"]["sapling"] <= ZERO_SHOT_THRESHOLD))
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                if avg_gz is not None:
+                    colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline_gz)
+                else:
+                    st.metric("Avg GPTZero", "N/A", help="GPTZero detector was disabled")
             with col2:
-                colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                if avg_sp is not None:
+                    colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline_sp)
+                else:
+                    st.metric("Avg Sapling", "N/A", help="Sapling detector was disabled")
             with col3:
                 st.metric("Zero-shot Success", f"{zero_shot_count}/{len(valid_drafts)}")
             with col4:
@@ -2029,11 +2075,18 @@ def _render_paragraph_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: 
             iter_num = draft.get("iter", 0) + 1
             draft_title = f"🔄 **Iteration {iter_num}** - Paragraph Mode"
             
-            # Check for zero-shot success
-            gz_after = draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 1.0)
-            sp_after = draft.get("scores_after", {}).get("group_doc", {}).get("sapling", 1.0)
+            # Check for zero-shot success (handle None values for disabled detectors)
+            gz_after = draft.get("scores_after", {}).get("group_doc", {}).get("gptzero")
+            sp_after = draft.get("scores_after", {}).get("group_doc", {}).get("sapling")
             
-            if gz_after <= ZERO_SHOT_THRESHOLD or sp_after <= ZERO_SHOT_THRESHOLD:
+            # Check zero-shot success only for enabled detectors
+            is_zero_shot = False
+            if gz_after is not None and gz_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            elif sp_after is not None and sp_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            
+            if is_zero_shot:
                 draft_title += " ✨ **ZERO-SHOT SUCCESS!**"
             
             st.markdown(draft_title)
@@ -2818,11 +2871,17 @@ def _render_full_document_view(by_model: Dict, doc_name: str, para_total: int):
     # Key metrics in a row
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
-        gz_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 0)
-        st.metric("GPTZero", f"{gz_after:.3f}")
+        gz_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("gptzero")
+        if gz_after is not None:
+            st.metric("GPTZero", f"{gz_after:.3f}")
+        else:
+            st.metric("GPTZero", "N/A", help="GPTZero detector was disabled")
     with col2:
-        sp_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("sapling", 0)
-        st.metric("Sapling", f"{sp_after:.3f}")
+        sp_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("sapling")
+        if sp_after is not None:
+            st.metric("Sapling", f"{sp_after:.3f}")
+        else:
+            st.metric("Sapling", "N/A", help="Sapling detector was disabled")
     with col3:
         wc_before = selected_draft.get("wordcount_before", 0)
         wc_after = selected_draft.get("wordcount_after", 0)
@@ -2843,8 +2902,14 @@ def _render_full_document_view(by_model: Dict, doc_name: str, para_total: int):
             if mismatch_reason:
                 st.caption(f"{mismatch_reason}")
         else:
-            # Check for zero-shot success
-            if gz_after <= ZERO_SHOT_THRESHOLD or sp_after <= ZERO_SHOT_THRESHOLD:
+            # Check for zero-shot success (only for enabled detectors)
+            is_zero_shot = False
+            if gz_after is not None and gz_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            elif sp_after is not None and sp_after <= ZERO_SHOT_THRESHOLD:
+                is_zero_shot = True
+            
+            if is_zero_shot:
                 st.success("✨ Zero-shot!")
             else:
                 st.success("✅ Match")
@@ -3153,8 +3218,12 @@ def _render_quality_deep_dive(by_model: Dict, doc_name: str, para_total: int):
                         "Boolean Success Rate": boolean_success_rate,
                         "Grammar Errors per Para": total_grammar_errors / len(content_paras) if content_paras else 0,
                         "AI Score After": draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 0),
-                        "Zero Shot Success": "✅" if (draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 1) <= ZERO_SHOT_THRESHOLD or 
-                                                      draft.get("scores_after", {}).get("group_doc", {}).get("sapling", 1) <= ZERO_SHOT_THRESHOLD) else "❌"
+                        "Zero Shot Success": "✅" if (
+                            (draft.get("scores_after", {}).get("group_doc", {}).get("gptzero") is not None and 
+                             draft.get("scores_after", {}).get("group_doc", {}).get("gptzero") <= ZERO_SHOT_THRESHOLD) or
+                            (draft.get("scores_after", {}).get("group_doc", {}).get("sapling") is not None and 
+                             draft.get("scores_after", {}).get("group_doc", {}).get("sapling") <= ZERO_SHOT_THRESHOLD)
+                        ) else "❌"
                     })
     
     if not quality_data:

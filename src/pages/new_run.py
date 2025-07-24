@@ -333,6 +333,44 @@ def page_new_run():
         if not include_doc_mode:
             st.info("ℹ️ Only paragraph-level humanization will be performed for AI texts and Human texts folders.")
 
+    # ── 3d · Detector selection options (NEW) ──────────────────────────
+    st.markdown("### 🔍 AI Detector Selection")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        use_gptzero = st.checkbox(
+            "🟠 GPTZero",
+            value=True,
+            help="Include GPTZero AI detection scoring",
+            key="use_gptzero"
+        )
+    
+    with col2:
+        use_sapling = st.checkbox(
+            "🟢 Sapling",
+            value=True,
+            help="Include Sapling AI detection scoring",
+            key="use_sapling"
+        )
+    
+    if not use_gptzero and not use_sapling:
+        st.error("⚠️ At least one detector must be selected!")
+        st.stop()
+    
+    # Show selected detectors info
+    selected_detectors = []
+    if use_gptzero:
+        selected_detectors.append("GPTZero")
+    if use_sapling:
+        selected_detectors.append("Sapling")
+    
+    st.info(f"📊 Selected detectors: {', '.join(selected_detectors)}")
+    
+    if not use_gptzero:
+        st.warning("⚠️ GPTZero results will be empty in the analysis")
+    if not use_sapling:
+        st.warning("⚠️ Sapling results will be empty in the analysis")
+
     # ── 4 · iteration count ─────────────────────────────────────────
     iterations = st.slider(
         "Iterations per document",
@@ -412,7 +450,9 @@ def page_new_run():
                 models=model_labels,
                 iterations=iterations,
                 doc_counts=doc_counts,
-                include_doc_mode=include_doc_mode  # Pass the new parameter
+                include_doc_mode=include_doc_mode,  # Pass the humanization mode parameter
+                use_gptzero=use_gptzero,  # Pass detector selection
+                use_sapling=use_sapling   # Pass detector selection
             )
             
             st.success(f"✅ Job started! ID: {job_id}")

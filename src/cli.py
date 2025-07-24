@@ -68,11 +68,23 @@ def main():
         action="store_true",
         help="Disable document-level humanization for AI/Human texts folders (para mode only)",
     )
+    ap.add_argument(
+        "--no-gptzero",
+        action="store_true",
+        help="Disable GPTZero AI detection (results will be empty)",
+    )
+    ap.add_argument(
+        "--no-sapling",
+        action="store_true",
+        help="Disable Sapling AI detection (results will be empty)",
+    )
 
     args = ap.parse_args()
 
     iterations = args.iters or REHUMANIZE_N
     include_doc_mode = not args.no_doc_mode  # Convert to positive boolean
+    use_gptzero = not args.no_gptzero  # Convert to positive boolean
+    use_sapling = not args.no_sapling  # Convert to positive boolean
     models = (
         [m.strip() for m in args.models.split(",") if m.strip()]
         or list(MODEL_REGISTRY)
@@ -87,6 +99,17 @@ def main():
     print(f"Models: {', '.join(models)} ({len(models)} total)")
     print(f"Iterations per model: {iterations}")
     print(f"Document-level mode: {'Enabled' if include_doc_mode else 'Disabled (para mode only)'}")
+    
+    # Show detector selection
+    detector_list = []
+    if use_gptzero:
+        detector_list.append("GPTZero")
+    if use_sapling:
+        detector_list.append("Sapling")
+    if not detector_list:
+        print("⚠️ Warning: No detectors selected - all scores will be empty!")
+    else:
+        print(f"AI Detectors: {', '.join(detector_list)}")
     doc_only   = sum(1 for d in docs if d.parent.name.endswith("_paras"))
     both_modes = len(docs) - doc_only
 
@@ -106,7 +129,7 @@ def main():
     results = []
 
     def _worker(p: Path):
-        return p, run_test(p, models, _log, iterations, include_doc_mode=include_doc_mode)
+        return p, run_test(p, models, _log, iterations, include_doc_mode=include_doc_mode, use_gptzero=use_gptzero, use_sapling=use_sapling)
 
     try:
         with ThreadPoolExecutor(max_workers=args.max_parallel_docs) as pool:

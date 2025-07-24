@@ -200,8 +200,34 @@ def _detect_both(text: str, paras: List[str], *, skip_cache: bool, log=None):
     return {"g_doc": gz_doc, "s_doc": sp_doc,
             "g_par": gz_par, "s_par": sp_par}
 
+
+def _detect_selected(text: str, paras: List[str], *, skip_cache: bool, use_gptzero: bool, use_sapling: bool, log=None):
+    """Run only selected detectors concurrently."""
+    if not use_gptzero and not use_sapling:
+        # Return empty results if no detectors are selected
+        return {"g_doc": None, "s_doc": None, "g_par": [None] * len(paras), "s_par": [None] * len(paras)}
+    
+    # Prepare tasks for selected detectors
+    futures = {}
+    with _fast_pool(max_workers=2) as pool:
+        if use_gptzero:
+            futures['gptzero'] = pool.submit(_detect_gptzero, text, paras, skip_cache=skip_cache, log=log)
+        if use_sapling:
+            futures['sapling'] = pool.submit(_detect_sapling, text, paras, skip_cache=skip_cache, log=log)
+        
+        # Collect results
+        gz_doc, gz_par = (None, [None] * len(paras))
+        sp_doc, sp_par = (None, [None] * len(paras))
+        
+        if 'gptzero' in futures:
+            gz_doc, gz_par = futures['gptzero'].result()
+        if 'sapling' in futures:
+            sp_doc, sp_par = futures['sapling'].result()
+    
+    return {"g_doc": gz_doc, "s_doc": sp_doc, "g_par": gz_par, "s_par": sp_par}
+
 # ═══════════════ 4 · Concurrent detector scoring ═══════════════════════
-def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=None):
+def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], use_gptzero: bool = True, use_sapling: bool = True, log=None):
     uniq = {_hash(t): (t, p) for t, p in texts_paras}
     baseline_hash = _hash(texts_paras[0][0])  # first entry == original document
     baseline_text, baseline_paras = texts_paras[0]
@@ -213,37 +239,59 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
     baseline_cached = False
     if baseline_hash in uniq:
         # Try to get cached scores for the original document
-        cached_gz = gptzero.get("gptzero", baseline_text)
-        cached_sp = sapling.get("sapling", baseline_text)
+        cached_gz = gptzero.get("gptzero", baseline_text) if use_gptzero else None
+        cached_sp = sapling.get("sapling", baseline_text) if use_sapling else None
         
-        if cached_gz is not None and cached_sp is not None:
+        # Check if we have all required cached data
+        has_required_cache = True
+        if use_gptzero and cached_gz is None:
+            has_required_cache = False
+        if use_sapling and cached_sp is None:
+            has_required_cache = False
+            
+        if has_required_cache:
             # Extract scores directly from cache without API calls
-            _maybe_log("Original document: ✨ using cached scores (no API calls)", log)
+            detector_names = []
+            if use_gptzero:
+                detector_names.append("GPTZero")
+            if use_sapling:
+                detector_names.append("Sapling")
+            _maybe_log(f"Original document: ✨ using cached scores for {', '.join(detector_names)} (no API calls)", log)
             
-            # Extract GPTZero scores from cache
-            doc_scores_gz[baseline_hash] = cached_gz["documents"][0]["completely_generated_prob"]
-            para_raw = cached_gz["documents"][0].get("paragraphs") or []
-            if len(para_raw) == len(baseline_paras):
-                gz_para_scores = [p["completely_generated_prob"] for p in para_raw]
-            else:
-                gz_para_scores = [doc_scores_gz[baseline_hash]] * len(baseline_paras)
-            
-            # Extract Sapling scores from cache
-            doc_scores_sp[baseline_hash] = cached_sp["score"]
-            sent_scores = [s["score"] for s in cached_sp.get("sentence_scores", [])]
-            sp_para_scores, idx = [], 0
-            for para in baseline_paras:
-                n_sent = len(_split_sentences(para))
-                if idx + n_sent <= len(sent_scores):
-                    chunk = sent_scores[idx:idx+n_sent]
-                    idx += n_sent
-                    sp_para_scores.append(sum(chunk)/len(chunk))
+            # Extract GPTZero scores from cache if selected
+            if use_gptzero and cached_gz:
+                doc_scores_gz[baseline_hash] = cached_gz["documents"][0]["completely_generated_prob"]
+                para_raw = cached_gz["documents"][0].get("paragraphs") or []
+                if len(para_raw) == len(baseline_paras):
+                    gz_para_scores = [p["completely_generated_prob"] for p in para_raw]
                 else:
-                    sp_para_scores.append(doc_scores_sp[baseline_hash])
+                    gz_para_scores = [doc_scores_gz[baseline_hash]] * len(baseline_paras)
+                # Update paragraph scores
+                para_scores_gz.update({_hash(pt): s for pt, s in zip(baseline_paras, gz_para_scores)})
+            else:
+                # Set empty/null values for GPTZero if not selected
+                doc_scores_gz[baseline_hash] = None
+                para_scores_gz.update({_hash(pt): None for pt in baseline_paras})
             
-            # Update paragraph scores
-            para_scores_gz.update({_hash(pt): s for pt, s in zip(baseline_paras, gz_para_scores)})
-            para_scores_sp.update({_hash(pt): s for pt, s in zip(baseline_paras, sp_para_scores)})
+            # Extract Sapling scores from cache if selected
+            if use_sapling and cached_sp:
+                doc_scores_sp[baseline_hash] = cached_sp["score"]
+                sent_scores = [s["score"] for s in cached_sp.get("sentence_scores", [])]
+                sp_para_scores, idx = [], 0
+                for para in baseline_paras:
+                    n_sent = len(_split_sentences(para))
+                    if idx + n_sent <= len(sent_scores):
+                        chunk = sent_scores[idx:idx+n_sent]
+                        idx += n_sent
+                        sp_para_scores.append(sum(chunk)/len(chunk))
+                    else:
+                        sp_para_scores.append(doc_scores_sp[baseline_hash])
+                # Update paragraph scores
+                para_scores_sp.update({_hash(pt): s for pt, s in zip(baseline_paras, sp_para_scores)})
+            else:
+                # Set empty/null values for Sapling if not selected
+                doc_scores_sp[baseline_hash] = None
+                para_scores_sp.update({_hash(pt): None for pt in baseline_paras})
             
             baseline_cached = True
             # Remove baseline from work queue
@@ -261,7 +309,7 @@ def _score_all_texts_concurrently(texts_paras: List[Tuple[str, List[str]]], log=
         fut2h = {}
         for h, (t, p) in uniq.items():
             skip_cache = True  # All remaining texts are new drafts, skip cache
-            fut = pool.submit(_detect_both, t, p, skip_cache=skip_cache, log=log)
+            fut = pool.submit(_detect_selected, t, p, skip_cache=skip_cache, use_gptzero=use_gptzero, use_sapling=use_sapling, log=log)
             fut2h[fut] = h
 
         completed = 0
@@ -1092,7 +1140,9 @@ def run_test(doc_path: Path, models: List[str]|None=None,
              logger: Callable[[str],None]|None=None,
              iterations: int = REHUMANIZE_N,
              max_retries: int = 5,
-             include_doc_mode: bool = True):  # NEW parameter
+             include_doc_mode: bool = True,
+             use_gptzero: bool = True,
+             use_sapling: bool = True):  # NEW detector selection parameters
     _stage("[Pipeline] run_test START", logger)
     _maybe_log("="*60, logger)
     _maybe_log(f"Processing document: {doc_path.name}", logger)
@@ -1171,7 +1221,7 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                 time.sleep(min(30 * (attempt - 1), 120))
                 
             doc_scores_gz, doc_scores_sp, para_scores_gz, para_scores_sp = \
-                _score_all_texts_concurrently(texts_paras, logger)
+                _score_all_texts_concurrently(texts_paras, use_gptzero=use_gptzero, use_sapling=use_sapling, log=logger)
             break
             
         except KeyboardInterrupt:
@@ -1360,6 +1410,7 @@ def load_ai_scores(doc_path: Path, log: Callable[[str], None] | None = None, max
                 time.sleep(min(30 * (attempt - 1), 120))
 
             # For original documents, try cache first (skip_cache=False)
+            # Document browser always uses both detectors
             scores = _detect_both(full_text, segs, skip_cache=False, log=log)
             break
 

@@ -46,23 +46,27 @@ def show_log(box):
 # ───────────────────────── histogram safety wrapper ────────────────────────
 def safe_hist(ax, data, bins=20, **kwargs):
     """
-    Safely plot histogram even with identical values.
+    Safely plot histogram even with identical values or None values.
     Falls back to single bar if all values are the same.
+    Filters out None values from disabled detectors.
     """
-    if not data:
+    # Filter out None values (from disabled detectors)
+    filtered_data = [x for x in data if x is not None]
+    
+    if not filtered_data:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return
     
-    data_range = max(data) - min(data)
+    data_range = max(filtered_data) - min(filtered_data)
     if data_range == 0:
         # All values identical
-        value = data[0]
+        value = filtered_data[0]
         width = abs(value) * 0.1 if value != 0 else 1
-        ax.bar([value], [len(data)], width=width, **kwargs)
+        ax.bar([value], [len(filtered_data)], width=width, **kwargs)
         ax.set_xlim(value - width * 2, value + width * 2)
     else:
         # Normal histogram
-        ax.hist(data, bins=bins, **kwargs)
+        ax.hist(filtered_data, bins=bins, **kwargs)
 
 # ─────────────────────── query-parameter helpers ─────────────────────────
 def qp_get(key: str, default: Any = None) -> Any:
@@ -148,7 +152,15 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
     
     # Draft header with iteration info
     expander_title = f"🔄 Iteration {iter_num} • {mode.title()} mode"
-    if gz_after <= ZERO_SHOT_THRESHOLD or sp_after <= ZERO_SHOT_THRESHOLD:
+    
+    # Check zero-shot success only for enabled detectors
+    is_zero_shot = False
+    if gz_after is not None and gz_after <= ZERO_SHOT_THRESHOLD:
+        is_zero_shot = True
+    elif sp_after is not None and sp_after <= ZERO_SHOT_THRESHOLD:
+        is_zero_shot = True
+    
+    if is_zero_shot:
         expander_title += " • ✨ Zero-shot!"
     
     with st.expander(expander_title, expanded=True):
@@ -156,14 +168,20 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
         cols = st.columns([2, 2, 2, 2, 2])
         
         with cols[0]:
-            colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - gz_before)
-            if gz_after <= ZERO_SHOT_THRESHOLD:
-                st.success(f"✅ Zero-shot!")
+            if gz_after is not None:
+                colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - gz_before)
+                if gz_after <= ZERO_SHOT_THRESHOLD:
+                    st.success(f"✅ Zero-shot!")
+            else:
+                st.metric("GPTZero", "N/A", help="GPTZero detector was disabled")
         
         with cols[1]:
-            colored_metric("Sapling", f"{sp_after:.3f}", sp_after - sp_before)
-            if sp_after <= ZERO_SHOT_THRESHOLD:
-                st.success(f"✅ Zero-shot!")
+            if sp_after is not None:
+                colored_metric("Sapling", f"{sp_after:.3f}", sp_after - sp_before)
+                if sp_after <= ZERO_SHOT_THRESHOLD:
+                    st.success(f"✅ Zero-shot!")
+            else:
+                st.metric("Sapling", "N/A", help="Sapling detector was disabled")
         
         with cols[2]:
             st.metric("Word Count Δ", f"{wc_delta:+d}")
@@ -668,8 +686,17 @@ def _compute_draft_metrics(draft: Dict, para_total: int) -> Dict:
         metrics["sp_before"] = draft["scores_before"]["group_doc"]["sapling"]
         metrics["gz_after"] = draft["scores_after"]["group_doc"]["gptzero"]
         metrics["sp_after"] = draft["scores_after"]["group_doc"]["sapling"]
-        metrics["gz_delta"] = metrics["gz_after"] - metrics["gz_before"]
-        metrics["sp_delta"] = metrics["sp_after"] - metrics["sp_before"]
+        
+        # Handle None values for disabled detectors in delta calculations
+        if metrics["gz_after"] is not None and metrics["gz_before"] is not None:
+            metrics["gz_delta"] = metrics["gz_after"] - metrics["gz_before"]
+        else:
+            metrics["gz_delta"] = 0
+            
+        if metrics["sp_after"] is not None and metrics["sp_before"] is not None:
+            metrics["sp_delta"] = metrics["sp_after"] - metrics["sp_before"]
+        else:
+            metrics["sp_delta"] = 0
     else:
         metrics.update({
             "gz_before": 0, "sp_before": 0, "gz_after": 0, "sp_after": 0,
@@ -681,9 +708,9 @@ def _compute_draft_metrics(draft: Dict, para_total: int) -> Dict:
     metrics["wc_after"] = draft.get("wordcount_after", 0)
     metrics["wc_delta"] = metrics["wc_after"] - metrics["wc_before"] 
     
-    # Zero-shot detection
-    metrics["gz_zero_shot"] = metrics["gz_after"] <= ZERO_SHOT_THRESHOLD
-    metrics["sp_zero_shot"] = metrics["sp_after"] <= ZERO_SHOT_THRESHOLD
+    # Zero-shot detection (only for enabled detectors)
+    metrics["gz_zero_shot"] = metrics["gz_after"] is not None and metrics["gz_after"] <= ZERO_SHOT_THRESHOLD
+    metrics["sp_zero_shot"] = metrics["sp_after"] is not None and metrics["sp_after"] <= ZERO_SHOT_THRESHOLD
     
     # Quality metrics
     para_mismatch = draft.get("para_mismatch", False)
