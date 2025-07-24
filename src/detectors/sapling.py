@@ -4,8 +4,8 @@ Sapling detector with API key rotation
 Features:
 - Rotates API keys on 429 errors
 - Tracks key freshness (least recently used)
-- Reads from cache for original documents
-- No cache writes (to avoid bloating with humanized drafts)
+- Caches original documents (skip_cache=False) for efficiency
+- Bypasses cache for humanized drafts (skip_cache=True) to avoid bloating
 - Character-based rate limiting
 """
 
@@ -166,15 +166,29 @@ def detect_ai(text: str, *, skip_cache: bool = False) -> dict:
     """
     Main entry point - compatible with existing code.
     
-    No caching is performed for new API calls (all use rotating keys).
-    The skip_cache parameter is kept for compatibility but ignored.
+    For original documents (skip_cache=False):
+    - Reads from cache first, writes result to cache if not found
+    For humanized drafts (skip_cache=True):
+    - Bypasses cache entirely to avoid bloating
     """
+    # Import here to avoid circular imports
+    from ..cache import get as cache_get, put as cache_put
+    
+    # Check cache first for original documents
+    if not skip_cache:
+        cached_result = cache_get("sapling", text)
+        if cached_result is not None:
+            return cached_result
+    
+    # Make API call
     client = _get_client()
+    result = None
     
     # Retry logic for resilience
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            return client.detect(text)
+            result = client.detect(text)
+            break
         except RuntimeError as e:
             # All keys exhausted
             if "All" in str(e) and "exhausted" in str(e):
@@ -190,6 +204,12 @@ def detect_ai(text: str, *, skip_cache: bool = False) -> dict:
             if attempt == _MAX_RETRIES:
                 raise
             time.sleep(_START_DELAY * (2 ** (attempt - 1)))
+    
+    # Cache result for original documents only
+    if not skip_cache and result is not None:
+        cache_put("sapling", text, result)
+    
+    return result
 
 
 # Compatibility function - check cache for reads only

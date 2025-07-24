@@ -87,12 +87,28 @@ def qp_get(key: str, default: Any = None) -> Any:
     return default
 
 def qp_set(**kwargs):
-    """Update multiple query params at once."""
-    current = dict(st.query_params)
-    current.update(kwargs)
-    # Clean up None values
-    current = {k: v for k, v in current.items() if v is not None}
-    st.query_params.update(current)
+    """
+    Update query-string parameters.
+
+    • Pass a value to **set / overwrite** a parameter  
+    • Pass **None** to **remove** a parameter  
+
+    Example  
+    --------  
+    >>> qp_set(view=None, doc=None)     # ← removes “view” and “doc”  
+    >>> qp_set(run="latest")            # ← sets/updates “run”
+    """
+    qp = st.query_params
+
+    for key, val in kwargs.items():
+        if val is None:
+            # Explicitly delete the key if it exists
+            try:
+                del qp[key]
+            except KeyError:
+                pass
+        else:
+            qp[key] = val
 
 # ─────────────────────── document listing ───────────────────────────────
 def list_docx_files(folder: Path) -> List[Path]:
@@ -156,23 +172,31 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
         with cols[3]:
             # Quality score calculation with grammar
             if not para_mismatch and draft.get("flag_counts"):
-                # Calculate boolean quality (existing logic)
-                bool_quality = sum(draft["flag_counts"].get(f, 0) for f in GEMINI_FLAGS) / (para_total * len(GEMINI_FLAGS)) * 100
+                flag_counts = draft["flag_counts"]
+                content_count = flag_counts.get("content_paragraph_count", para_total)
+                total_segments = flag_counts.get("total_segments", para_total)
+                
+                # Calculate boolean quality (using content paragraphs only)
+                bool_quality = sum(flag_counts.get(f, 0) for f in GEMINI_FLAGS) / (content_count * len(GEMINI_FLAGS)) * 100 if content_count > 0 else 0
                 
                 # Get grammar score if available
-                grammar_score = draft["flag_counts"].get("grammar_score")
+                grammar_score = flag_counts.get("grammar_score")
                 
                 if grammar_score is not None:
-                    # Composite score: 80% boolean checks + 20% grammar
-                    composite_quality = bool_quality * 0.8 + (grammar_score / 10) * 20
-                    st.metric("Quality", f"{composite_quality:.1f}%")
-                    # Convert grammar score to percentage
-                    grammar_pct = grammar_score * 10
-                    st.caption(f"Bool: {bool_quality:.0f}% | Grammar: {grammar_pct:.0f}%")
+                    # Show grammar as 0-10 scale (not percentage)
+                    st.metric("Quality", f"{bool_quality:.1f}%")
+                    st.caption(f"Grammar: {grammar_score:.1f}/10")
                 else:
                     # Old runs without grammar
                     st.metric("Quality", f"{bool_quality:.1f}%")
                     st.caption("Legacy (no grammar)")
+                
+                # Show content vs total paragraph structure
+                if total_segments > content_count:
+                    headings = total_segments - content_count
+                    st.caption(f"{content_count} content + {headings} headings")
+                else:
+                    st.caption(f"{content_count} content paras")
             else:
                 st.metric("Quality", "—")
                 if para_mismatch:
@@ -180,9 +204,14 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
         
         with cols[4]:
             para_count_after = draft.get("para_count_after", 0)
-            if para_count_after != para_total:
+            para_mismatch = draft.get("para_mismatch", False)
+            mismatch_reason = draft.get("mismatch_reason")
+            
+            if para_mismatch:
                 st.metric("Paragraphs", f"{para_count_after}", f"{para_count_after - para_total:+d}")
                 st.warning("⚠️ Mismatch")
+                if mismatch_reason:
+                    st.caption(f"Reason: {mismatch_reason}")
             else:
                 st.metric("Paragraphs", f"{para_count_after}")
                 st.success("✅ Match")
@@ -192,19 +221,73 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
             st.divider()
             st.markdown("##### Quality Breakdown")
             
-            # Boolean flags
+            flag_counts = draft["flag_counts"]
+            content_count = flag_counts.get("content_paragraph_count", para_total)
+            total_segments = flag_counts.get("total_segments", para_total)
+            
+            # Show paragraph structure info
+            if total_segments > content_count:
+                headings_count = total_segments - content_count
+                st.info(f"📊 **Document structure:** {content_count} content paragraphs + {headings_count} headings = {total_segments} total segments")
+                st.caption("Quality metrics are calculated only on content paragraphs (headings excluded)")
+            
+            # Boolean flags (calculated on content paragraphs only)
             flag_cols = st.columns(len(GEMINI_FLAGS))
             for idx, flag in enumerate(GEMINI_FLAGS):
-                count = draft["flag_counts"].get(flag, 0)
-                pct = (count / para_total * 100) if para_total else 0
+                count = flag_counts.get(flag, 0)
+                pct = (count / content_count * 100) if content_count else 0
                 with flag_cols[idx]:
                     flag_name = flag.replace('_', ' ').title()
                     if pct >= 90:
-                        st.success(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+                        st.success(f"**{flag_name}**\n{count}/{content_count} ({pct:.0f}%)")
                     elif pct >= 70:
-                        st.warning(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+                        st.warning(f"**{flag_name}**\n{count}/{content_count} ({pct:.0f}%)")
                     else:
-                        st.error(f"**{flag_name}**\n{count}/{para_total} ({pct:.0f}%)")
+                        st.error(f"**{flag_name}**\n{count}/{content_count} ({pct:.0f}%)")
+            
+            # Show numeric quality levels if available
+            meaning_level = flag_counts.get("same_meaning_level_avg")
+            missing_level = flag_counts.get("missing_info_level_avg")
+            grammar_score = flag_counts.get("grammar_score")
+            
+            if any(x is not None for x in [meaning_level, missing_level, grammar_score]):
+                st.divider()
+                st.markdown("##### 🎯 Quality Levels (0-10 scale)")
+                level_cols = st.columns(3)
+                
+                with level_cols[0]:
+                    if meaning_level is not None:
+                        if meaning_level >= 8:
+                            st.success(f"**Same Meaning**\n{meaning_level:.1f}/10")
+                        elif meaning_level >= 6:
+                            st.warning(f"**Same Meaning**\n{meaning_level:.1f}/10")
+                        else:
+                            st.error(f"**Same Meaning**\n{meaning_level:.1f}/10")
+                    else:
+                        st.info("**Same Meaning**\nNot evaluated")
+                
+                with level_cols[1]:
+                    if missing_level is not None:
+                        # Lower is better for missing info (0 = no missing info)
+                        if missing_level <= 2:
+                            st.success(f"**Missing Info**\n{missing_level:.1f}/10")
+                        elif missing_level <= 4:
+                            st.warning(f"**Missing Info**\n{missing_level:.1f}/10")
+                        else:
+                            st.error(f"**Missing Info**\n{missing_level:.1f}/10")
+                    else:
+                        st.info("**Missing Info**\nNot evaluated")
+                
+                with level_cols[2]:
+                    if grammar_score is not None:
+                        if grammar_score >= 8:
+                            st.success(f"**Grammar**\n{grammar_score:.1f}/10")
+                        elif grammar_score >= 6:
+                            st.warning(f"**Grammar**\n{grammar_score:.1f}/10")
+                        else:
+                            st.error(f"**Grammar**\n{grammar_score:.1f}/10")
+                    else:
+                        st.info("**Grammar**\nNot evaluated")
             
             # Grammar section (if available)
             grammar_errors = draft["flag_counts"].get("grammar_errors", [])
@@ -227,12 +310,15 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
             
             para_data = []
             for detail in draft["paragraph_details"]:
-                # Extract grammar info
+                # Extract paragraph type and grammar info
+                para_type = detail.get("type", "content")
+                is_heading = para_type == "heading"
                 grammar_score = detail.get("grammar_score")
                 grammar_errors = detail.get("grammar_errors", [])
                 
                 para_info = {
                     "Para #": detail["paragraph"],
+                    "Type": "📋 Heading" if is_heading else "📄 Content",
                     "WC Before": detail["wc_before"],
                     "WC After": detail["wc_after"],
                     "WC Δ": detail["wc_after"] - detail["wc_before"],
@@ -242,17 +328,67 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                     "SP After": f"{detail['ai_after']['sapling']:.3f}" if detail['ai_after'].get('sapling') is not None else "—",
                 }
                 
-                # Add quality flags
+                # Add quality flags (empty for headings)
                 for flag in GEMINI_FLAGS:
                     flag_name = flag.replace('_', ' ').title()
-                    para_info[flag_name] = "✅" if detail["flags"].get(flag, False) else "❌"
+                    if is_heading:
+                        para_info[flag_name] = "—"  # No quality evaluation for headings
+                    else:
+                        para_info[flag_name] = "✅" if detail["flags"].get(flag, False) else "❌"
                 
-                # Add grammar info if available (as percentage)
-                if grammar_score is not None:
-                    grammar_pct = grammar_score * 10
-                    para_info["Grammar"] = f"{grammar_pct:.0f}%"
+                # Add numeric quality levels for content paragraphs
+                if not is_heading:
+                    meaning_level = detail.get("same_meaning_level")
+                    missing_level = detail.get("missing_info_level")
+                    para_info["Meaning Lv"] = f"{meaning_level:.1f}" if meaning_level is not None else "—"
+                    para_info["Missing Lv"] = f"{missing_level:.1f}" if missing_level is not None else "—"
+                    
+                    # Add meaning details if available
+                    meaning_details = detail.get("same_meaning_details", "")
+                    if meaning_details:
+                        para_info["Meaning Details"] = meaning_details[:50] + ("..." if len(meaning_details) > 50 else "")
+                    else:
+                        para_info["Meaning Details"] = "—"
+                        
+                    # Add missing info details
+                    missing_items = detail.get("missing_items", [])
+                    added_items = detail.get("added_items", [])
+                    if missing_items or added_items:
+                        details_parts = []
+                        if missing_items:
+                            details_parts.append(f"Missing: {', '.join(missing_items[:2])}")
+                        if added_items:
+                            details_parts.append(f"Added: {', '.join(added_items[:2])}")
+                        para_info["Info Changes"] = "; ".join(details_parts)[:60] + ("..." if len("; ".join(details_parts)) > 60 else "")
+                    else:
+                        para_info["Info Changes"] = "—"
+                else:
+                    para_info["Meaning Lv"] = "—"
+                    para_info["Missing Lv"] = "—"
+                    para_info["Meaning Details"] = "—"
+                    para_info["Info Changes"] = "—"
+                
+                # Add grammar info (0-10 scale for content, empty for headings)
+                if not is_heading:
+                    if grammar_score is not None:
+                        para_info["Grammar Lv"] = f"{grammar_score:.1f}"
+                    else:
+                        para_info["Grammar Lv"] = "—"
+                        
                     if grammar_errors:
                         para_info["Grammar Issues"] = f"{len(grammar_errors)} issue(s)"
+                        # Show first few errors
+                        error_preview = "; ".join(grammar_errors[:2])
+                        if len(error_preview) > 50:
+                            error_preview = error_preview[:50] + "..."
+                        para_info["Error Details"] = error_preview
+                    else:
+                        para_info["Grammar Issues"] = "None"
+                        para_info["Error Details"] = "—"
+                else:
+                    para_info["Grammar Lv"] = "—"
+                    para_info["Grammar Issues"] = "—"
+                    para_info["Error Details"] = "—"
                 
                 para_data.append(para_info)
             
@@ -281,24 +417,57 @@ def render_draft(draft: Dict, para_total: int, doc_name: str, model: str):
                         pass
                 return ''
             
+            def style_levels(val):
+                """Style the 0-10 level columns (Meaning Lv, Missing Lv)."""
+                if isinstance(val, str) and val != "—":
+                    try:
+                        level = float(val)
+                        if level >= 8:
+                            return 'color: green; font-weight: bold'
+                        elif level >= 6:
+                            return 'color: orange'
+                        elif level < 4:
+                            return 'color: red; font-weight: bold'
+                    except:
+                        pass
+                return ''
+            
+            def style_type(val):
+                """Style the paragraph type column."""
+                if val == "📋 Heading":
+                    return 'background-color: #e8f4f8; font-weight: bold'
+                elif val == "📄 Content":
+                    return 'background-color: #f8f8f8'
+                return ''
+            
             style_cols = ['GZ Before', 'GZ After', 'SP Before', 'SP After', 'WC Δ']
             flag_cols = [col for col in df.columns if col in [f.replace('_', ' ').title() for f in GEMINI_FLAGS]]
+            level_cols = ['Meaning Lv', 'Missing Lv']
             
             styled_df = df.style
+            
+            # Apply type styling
+            if 'Type' in df.columns:
+                styled_df = styled_df.applymap(style_type, subset=['Type'])
             
             # Apply delta styling
             if 'WC Δ' in df.columns:
                 styled_df = styled_df.applymap(style_delta, subset=['WC Δ'])
             
-            # Apply grammar styling
-            if 'Grammar' in df.columns:
-                styled_df = styled_df.applymap(style_grammar, subset=['Grammar'])
+            # Apply grammar styling (now for Grammar Lv column)
+            if 'Grammar Lv' in df.columns:
+                styled_df = styled_df.applymap(style_levels, subset=['Grammar Lv'])  # Use levels styling for 0-10 scale
+            
+            # Apply level styling for meaning and missing info
+            for col in level_cols:
+                if col in df.columns:
+                    styled_df = styled_df.applymap(style_levels, subset=[col])
             
             # Apply flag styling
             for col in flag_cols:
                 if col in df.columns:
                     styled_df = styled_df.applymap(
-                        lambda x: 'background-color: #d4f8d4' if x == "✅" else 'background-color: #f8d4d4' if x == "❌" else '',
+                        lambda x: 'background-color: #d4f8d4' if x == "✅" else 'background-color: #f8d4d4' if x == "❌" else 'background-color: #f0f0f0' if x == "—" else '',
                         subset=[col]
                     )
             
@@ -440,3 +609,277 @@ def natural_key(p: Path | str):
     """
     s = p.name if isinstance(p, Path) else str(p)
     return [int(tok) if tok.isdigit() else tok.lower() for tok in _num.split(s)]
+
+# ─────────────────────── performance helpers ─────────────────────────
+@st.cache_data(ttl=1800)
+def cached_safe_hist(data: List[float], bins: int = 20):
+    """Cached version of safe histogram data preparation."""
+    if not data:
+        return None, "No data"
+    
+    data_range = max(data) - min(data)
+    if data_range == 0:
+        # All values identical
+        value = data[0]
+        width = abs(value) * 0.1 if value != 0 else 1
+        return {
+            'type': 'bar',
+            'value': value,
+            'count': len(data),
+            'width': width
+        }, None
+    else:
+        # Normal histogram
+        hist, bin_edges = np.histogram(data, bins=bins)
+        return {
+            'type': 'hist',
+            'hist': hist.tolist(),
+            'bin_edges': bin_edges.tolist()
+        }, None
+
+def render_cached_histogram(ax, cached_data):
+    """Render histogram from cached data."""
+    if cached_data is None:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        return
+    
+    if cached_data['type'] == 'bar':
+        # Single bar for identical values
+        ax.bar([cached_data['value']], [cached_data['count']], 
+               width=cached_data['width'])
+        ax.set_xlim(cached_data['value'] - cached_data['width'] * 2, 
+                   cached_data['value'] + cached_data['width'] * 2)
+    else:
+        # Normal histogram
+        bin_edges = cached_data['bin_edges']
+        bin_centers = [(bin_edges[i] + bin_edges[i+1])/2 for i in range(len(bin_edges)-1)]
+        widths = [bin_edges[i+1] - bin_edges[i] for i in range(len(bin_edges)-1)]
+        ax.bar(bin_centers, cached_data['hist'], width=widths)
+
+# ─────────────────────── optimized draft renderer ────────────────────────
+@st.cache_data(ttl=900, show_spinner=False)  # Cache for 15 minutes
+def _compute_draft_metrics(draft: Dict, para_total: int) -> Dict:
+    """Pre-compute expensive draft metrics for caching."""
+    metrics = {}
+    
+    # Basic scores
+    if "scores_before" in draft and "scores_after" in draft:
+        metrics["gz_before"] = draft["scores_before"]["group_doc"]["gptzero"]
+        metrics["sp_before"] = draft["scores_before"]["group_doc"]["sapling"]
+        metrics["gz_after"] = draft["scores_after"]["group_doc"]["gptzero"]
+        metrics["sp_after"] = draft["scores_after"]["group_doc"]["sapling"]
+        metrics["gz_delta"] = metrics["gz_after"] - metrics["gz_before"]
+        metrics["sp_delta"] = metrics["sp_after"] - metrics["sp_before"]
+    else:
+        metrics.update({
+            "gz_before": 0, "sp_before": 0, "gz_after": 0, "sp_after": 0,
+            "gz_delta": 0, "sp_delta": 0
+        })
+    
+    # Word counts
+    metrics["wc_before"] = draft.get("wordcount_before", 0)
+    metrics["wc_after"] = draft.get("wordcount_after", 0)
+    metrics["wc_delta"] = metrics["wc_after"] - metrics["wc_before"] 
+    
+    # Zero-shot detection
+    metrics["gz_zero_shot"] = metrics["gz_after"] <= ZERO_SHOT_THRESHOLD
+    metrics["sp_zero_shot"] = metrics["sp_after"] <= ZERO_SHOT_THRESHOLD
+    
+    # Quality metrics
+    para_mismatch = draft.get("para_mismatch", False)
+    if not para_mismatch and draft.get("flag_counts"):
+        flag_counts = draft["flag_counts"]
+        content_count = flag_counts.get("content_paragraph_count", para_total)
+        
+        # Boolean quality percentage
+        bool_quality = sum(flag_counts.get(f, 0) for f in GEMINI_FLAGS) / (content_count * len(GEMINI_FLAGS)) * 100 if content_count > 0 else 0
+        metrics["quality_pct"] = bool_quality
+        
+        # Grammar score
+        metrics["grammar_score"] = flag_counts.get("grammar_score")
+        
+        # Structure info
+        total_segments = flag_counts.get("total_segments", para_total)
+        metrics["content_count"] = content_count
+        metrics["heading_count"] = total_segments - content_count
+        metrics["total_segments"] = total_segments
+    else:
+        metrics.update({
+            "quality_pct": None, "grammar_score": None,
+            "content_count": 0, "heading_count": 0, "total_segments": 0
+        })
+    
+    # Paragraph structure
+    metrics["para_mismatch"] = para_mismatch
+    metrics["mismatch_reason"] = draft.get("mismatch_reason")
+    metrics["para_count_after"] = draft.get("para_count_after", 0)
+    metrics["para_count_delta"] = metrics["para_count_after"] - para_total
+    
+    return metrics
+
+def render_draft_optimized(draft: Dict, para_total: int, doc_name: str, model: str):
+    """Optimized draft renderer using pre-computed metrics."""
+    iter_num = draft.get("iter", 0) + 1
+    mode = draft.get("mode", "unknown")
+    
+    # Get cached metrics
+    metrics = _compute_draft_metrics(draft, para_total)
+    
+    # Draft header with iteration info
+    expander_title = f"🔄 Iteration {iter_num} • {mode.title()} mode"
+    if metrics["gz_zero_shot"] or metrics["sp_zero_shot"]:
+        expander_title += " • ✨ Zero-shot!"
+    
+    with st.expander(expander_title, expanded=True):
+        # Key metrics row
+        cols = st.columns([2, 2, 2, 2, 2])
+        
+        with cols[0]:
+            colored_metric("GPTZero", f"{metrics['gz_after']:.3f}", metrics['gz_delta'])
+            if metrics["gz_zero_shot"]:
+                st.success("✅ Zero-shot!")
+        
+        with cols[1]:
+            colored_metric("Sapling", f"{metrics['sp_after']:.3f}", metrics['sp_delta'])
+            if metrics["sp_zero_shot"]:
+                st.success("✅ Zero-shot!")
+        
+        with cols[2]:
+            st.metric("Word Count Δ", f"{metrics['wc_delta']:+d}")
+            st.caption(f"{metrics['wc_before']} → {metrics['wc_after']}")
+        
+        with cols[3]:
+            # Quality score
+            if metrics["quality_pct"] is not None:
+                st.metric("Quality", f"{metrics['quality_pct']:.1f}%")
+                if metrics["grammar_score"] is not None:
+                    st.caption(f"Grammar: {metrics['grammar_score']:.1f}/10")
+                else:
+                    st.caption("Legacy (no grammar)")
+                
+                # Structure info
+                if metrics["total_segments"] > metrics["content_count"]:
+                    st.caption(f"{metrics['content_count']} content + {metrics['heading_count']} headings")
+                else:
+                    st.caption(f"{metrics['content_count']} content paras")
+            else:
+                st.metric("Quality", "—")
+                if metrics["para_mismatch"]:
+                    st.caption("Para mismatch")
+        
+        with cols[4]:
+            # Paragraph structure
+            if metrics["para_mismatch"]:
+                st.metric("Paragraphs", f"{metrics['para_count_after']}", f"{metrics['para_count_delta']:+d}")
+                st.warning("⚠️ Mismatch")
+                if metrics["mismatch_reason"]:
+                    st.caption(f"Reason: {metrics['mismatch_reason']}")
+            else:
+                st.metric("Paragraphs", f"{metrics['para_count_after']}")
+                st.success("✅ Match")
+        
+        # For detailed breakdown, only show if expanded and not cached
+        if st.checkbox(f"Show detailed breakdown", key=f"detail_{doc_name}_{model}_{mode}_{iter_num}"):
+            # Use the original detailed render for the expanded view
+            render_draft(draft, para_total, doc_name, model)
+
+# ─────────────────────── cache management helpers ─────────────────────────
+def clear_streamlit_cache():
+    """Clear all Streamlit caches to free memory and force recomputation."""
+    try:
+        st.cache_data.clear()
+        return True, "✅ Successfully cleared all cached data"
+    except Exception as e:
+        return False, f"❌ Error clearing cache: {str(e)}"
+
+def get_cache_stats():
+    """Get basic cache statistics for performance monitoring."""
+    try:
+        # This is approximate since Streamlit doesn't expose detailed cache stats
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        return {
+            "memory_usage_mb": memory_info.rss / 1024 / 1024,
+            "memory_percentage": process.memory_percent(),
+            "cpu_percentage": process.cpu_percent(),
+            "cache_available": hasattr(st, 'cache_data')
+        }
+    except ImportError:
+        return {
+            "memory_usage_mb": "Unknown",
+            "memory_percentage": "Unknown", 
+            "cpu_percentage": "Unknown",
+            "cache_available": hasattr(st, 'cache_data')
+        }
+    except Exception:
+        return {"cache_available": hasattr(st, 'cache_data')}
+
+def show_performance_metrics():
+    """Display performance metrics in the sidebar or main area."""
+    st.markdown("##### 🚀 Performance")
+    
+    stats = get_cache_stats()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if isinstance(stats.get("memory_usage_mb"), (int, float)):
+            st.metric("Memory", f"{stats['memory_usage_mb']:.1f} MB")
+        else:
+            st.metric("Memory", "Unknown")
+    
+    with col2:
+        if isinstance(stats.get("cpu_percentage"), (int, float)):
+            st.metric("CPU", f"{stats['cpu_percentage']:.1f}%")
+        else:
+            st.metric("CPU", "Unknown")
+    
+    # Cache management
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear Cache", help="Clear all cached data to free memory"):
+            success, message = clear_streamlit_cache()
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+            st.rerun()
+    
+    with col2:
+        if st.button("♻️ Refresh Stats"):
+            st.rerun()
+
+# ─────────────────────── lazy loading helpers ─────────────────────────
+class LazyLoader:
+    """Helper class for lazy loading of expensive computations."""
+    
+    def __init__(self, compute_func, cache_key: str, ttl: int = 1800):
+        self.compute_func = compute_func
+        self.cache_key = cache_key
+        self.ttl = ttl
+        self._cached_func = st.cache_data(ttl=ttl)(compute_func)
+    
+    def load(self, *args, **kwargs):
+        """Load data with caching and progress indication."""
+        with st.spinner(f"Loading {self.cache_key}..."):
+            return self._cached_func(*args, **kwargs)
+    
+    def clear_cache(self):
+        """Clear cache for this specific loader."""
+        try:
+            self._cached_func.clear()
+            return True
+        except:
+            return False
+
+# ─────────────────────── progress tracking ─────────────────────────
+def show_loading_progress(current: int, total: int, operation: str = "Processing"):
+    """Show a simple progress indicator."""
+    if total > 0:
+        progress = current / total
+        st.progress(progress, text=f"{operation}: {current}/{total} ({progress*100:.1f}%)")
+    else:
+        st.info(f"{operation}...")

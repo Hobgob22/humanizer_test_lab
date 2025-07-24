@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 # Import page functions
 from src.pages import page_new_run, page_runs, page_browser
+from src.pages.utils import show_performance_metrics
 
 # ───────────────────────── page config ───────────────────────
 st.set_page_config(page_title="Humanizer Test-Bench", layout="wide", initial_sidebar_state="expanded")
@@ -42,6 +43,12 @@ PAGE = st.sidebar.radio(
     ["New Run", "Benchmark Analysis", "Document Browser"],
     help="Select a page to navigate"
 )
+
+st.sidebar.divider()
+
+# Performance monitoring section  
+with st.sidebar.expander("🚀 Performance Monitor", expanded=False):
+    show_performance_metrics()
 
 st.sidebar.divider()
 

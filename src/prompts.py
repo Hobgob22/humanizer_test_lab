@@ -144,66 +144,169 @@ You are an expert at rewriting AI-generated text to sound more human and natural
 """
 
 # ───────────────────────── Updated evaluation prompt ─────────────────────────
-EVALUATION_PROMPT = """
-You are a comprehensive text quality evaluator. Your task is to analyse and compare two texts: an original text and a humanised version.
+def build_evaluation_prompt(has_ref_citations: bool = True) -> str:
+    evaluation_prompt = """
+    You are an expert academic-writing evaluator.
 
-Evaluate the humanised text on the following five dimensions:
+    You will be given two texts:
 
-1. **Meaning preservation** – does it convey the same idea?
-2. **Language consistency** – are both texts in the same language?
-3. **Information completeness** – is anything missing or added?
-4. **Citation preservation** – are all citations kept exactly?
-5. **Grammar quality** – overall grammatical correctness (1 = very poor, 10 = perfect) and a list of concrete errors, if any.
+    **ORIGINAL:** <text 1>  
+    **HUMANISED:** <text 2>
 
-Return *only* the following JSON (nothing else):
+    Evaluate the HUMANISED text against the ORIGINAL and return **only** the JSON object shown below – no extra keys, headings or commentary.
+  """
+    if has_ref_citations:
+        evaluation_prompt += """
+        Evaluate the HUMANISED text on the following five dimensions:
+            1. **Same Meaning** – does it convey the same idea?
+            2. **Language consistency** – are both texts in the same language?
+            3. **Missing Information** – is anything missing or added?
+            4. **Citation Preservation** – are all citations kept exactly?
+            5. **Grammar Quality** – overall grammatical correctness.
+        """
+    else:
+        evaluation_prompt += """
+        Evaluate the HUMANISED text on the following four dimensions:
+            1. **Same Meaning** – does it convey the same idea?
+            2. **Language consistency** – are both texts in the same language?
+            3. **Missing Information** – is anything missing or added?
+            4. **Grammar Quality** – overall grammatical correctness.
+        """
 
-{
-  "same_meaning": {
-    "preserved": <boolean>,
-    "confidence": <number 0-100>,
-    "details": "<short explanation>"
-  },
-  "same_lang": {
-    "consistent": <boolean>,
-    "originalLanguage": "<language>",
-    "humanisedLanguage": "<language>"
-  },
-  "no_missing_info": {
-    "complete": <boolean>,
-    "missingInfo": ["<items>"],
-    "addedInfo": ["<items>"]
-  },
-  "citation_preserved": {
-    "preserved": <boolean>,
-    "originalCount": <int>,
-    "humanisedCount": <int>,
-    "missingCitations": ["<citations>"]
-  },
-  "grammar": {
-    "score": <integer 1-10>,
-    "errors": ["<grammar error descriptions>"]
-  }
-}
-"""
+    evaluation_prompt += """
+    **Same Meaning**  
+    0 – Totally different: No semantic connection at all.  
+      _e.g., “Photosynthesis is vital for plants” vs. “The stock market closed higher today.”_
 
-# ───────────────────────── Legacy evaluation prompt (for reference) ─────────────────────────
-EVALUATION_PROMPT_LEGACY = """
-You will receive ORIGINAL text and its HUMANIZED rewrite.
+    1 – Extremely different: Almost complete meaning change; only a stray word or superficial theme in common.  
+      _e.g., Original is about causes of climate change; humanised talks only about recycling, ignoring the causes._
 
-Your task is to evaluate whether the humanized version preserves key elements from the original.
+    2 – Very different: Substantial meaning loss. Main thesis or conclusions lost, with most facts or arguments replaced or omitted.  
+      _e.g., Original discusses three health benefits of walking; humanised mentions only one, and introduces unrelated exercise types._
 
-Pay special attention to citations, which appear in parentheses and may include:
-- Reference style: (Ref-f123456), (Ref-u999999), (Ref-s000001) where f/u/s are prefixes followed by 6 digits
+    3 – Quite different: Major meaning alterations. Key points are missing or rephrased so the intent/logic is hard to trace.  
+      _e.g., Argument for stricter regulations turned into a discussion of possible risks, with little clear position._
 
-Return *pure JSON* with exactly these keys (all boolean):
-{
-  "same_meaning": true/false - Does the humanized text convey the same meaning as the original?,
-  "same_lang": true/false - Is the humanized text in the same language as the original?,
-  "no_missing_info": true/false - Does the humanized text contain all information from the original?,
-  "citation_preserved": true/false - Are ALL citations from the original preserved exactly in the humanized version?
-}
+    4 – Moderately different: Significant meaning changes. The core subject is similar, but crucial facts, logic, or conclusions differ.  
+      _e.g., Original supports universal healthcare; humanised discusses healthcare in general, omitting the advocacy part._
 
-For citation_preserved: Every citation in parentheses from the original MUST appear in the humanized text. The citation content must be identical, though its position in the sentence may change.
+    5 – Somewhat different: Partial meaning preservation. Main idea is present, but notable shifts in emphasis, examples, or conclusions.  
+      _e.g., Same topic, but original focuses on economic impact, humanised mostly on environmental effects._
 
-No commentary, no extra keys.
-"""
+    6 – Similar: Core meaning preserved, but with some interpretation differences, different focus, or small factual changes.  
+      _e.g., Both discuss climate policy, but some supporting arguments are changed or new examples introduced._
+
+    7 – Very similar: Same meaning with noticeable but acceptable differences (wording, order, small clarifications).  
+      _Examples of acceptable differences: Passive to active voice, sentence order swapped, minor clarifications added, small non-factual paraphrases._  
+      _e.g., Sentences rephrased, some passive/active shifts, added minor clarifications (“since 2010” instead of “recently”)._
+
+    8 – Highly similar: Only minor stylistic variations. Message, facts, and argument structure are all the same.  
+      _e.g., Shortening of long sentences, synonyms, or moving sentences for flow; no meaning lost._
+
+    9 – Near-identical: Same core meaning with very slight nuance differences (punctuation, word choice).  
+      _e.g., "can" replaced with "may," "increases" swapped for "raises," etc.; substance identical._
+
+    10 – Identical meaning: Perfect semantic preservation; all facts, arguments, and implications are exactly matched._
+
+    **Missing Information Level**  
+    0 – No missing information: Every essential and non-essential detail is preserved.  
+      _e.g., All examples, nuances, lists, side-notes, and wording style retained._
+
+    1 – Trivial omissions: Only unimportant stylistic elements dropped (e.g., “however,” “in conclusion”).  
+      _e.g., Removed “It is important to note,” but kept all arguments._
+
+    2 – Minor omissions: Lost descriptive detail, but nothing affecting main point.  
+      _e.g., Omitted one adjective or a minor aside, but facts are all there._
+
+    3 – Noticeable omissions: Left out a clarifying sentence or non-essential context, but core logic intact.  
+      _e.g., Dropped an explanatory example or background fact._
+
+    4 – Moderate omissions: Missing some important contextual information (a secondary argument or example).  
+      _e.g., Skipped one of several reasons or statistics provided in original._
+
+    5 – Significant omissions: An entire supporting argument, piece of evidence, or crucial example omitted.  
+      _e.g., Left out the third of three case studies that reinforce the thesis._
+
+    6 – Major omissions: Several important facts or arguments missing; logic becomes harder to follow.  
+      _e.g., Only half the evidence or context from the original remains._
+
+    7 – Severe omissions: Most important supporting info gone; only generalities left.  
+      _e.g., Just summary statements, all details lost._
+
+    8 – Extensive omissions: Only the main claim or a few fragments remain; reader cannot understand the argument fully.  
+      _e.g., Single-sentence summary with no examples._
+
+    9 – Critical omissions: Fundamental information missing; reader cannot reconstruct the original thesis.  
+      _e.g., Key facts and conclusions omitted._
+
+    10 – Complete information loss: No recognizable info from original; text is empty or fully replaced._
+
+    **Grammar Quality**  
+    0 – Broken/unreadable: Gibberish, incomplete sentences, or random words.
+    1 – Severely poor: Extensive, persistent grammar errors make it extremely hard to understand.
+    2 – Very poor: Major errors throughout; meaning frequently unclear.  
+    3 – Poor: Frequent grammar errors or awkward phrasing, but possible to extract meaning with effort.  
+    4 – Below average: Multiple grammatical errors, some unclear expressions  
+    5 – Adequate: Understandable but some awkward or non-native phrasing.  
+    6 – Acceptable: Occasional grammar slips, but text is clear.  
+    7 – Good: Rare and minor errors (e.g., one missing article), mostly natural flow.  
+    8 – Very good: One or two very minor slips, otherwise smooth and clear.  
+    9 – Excellent: No grammar errors; only possible improvements are stylistic.  
+    10 – Perfect grammar: Flawless, native-level fluency; text could be published as-is._
+
+    """
+    if has_ref_citations:
+        evaluation_prompt += """
+        ### Required JSON
+        {
+          "same_meaning": {
+            "level": <int 0-10>,
+            "details": "<brief explanation of main differences with examples>"
+          },
+          "same_lang": {
+            "consistent": <boolean>,
+            "originalLanguage": "<ISO-639-1 code or name>",
+            "humanisedLanguage": "<ISO-639-1 code or name>"
+          },
+          "missing_information": {
+            "level": <int 0-10>,
+            "missingInfo": ["<items omitted>"],
+            "addedInfo": ["<items added>"]
+          },
+          "citation_preserved": {
+            "preserved": <boolean>,
+            "originalCount": <int>,
+            "humanisedCount": <int>,
+            "missingCitations": ["<citations not found>"]
+          },
+          "grammar": {
+            "level": <int 0-10>,
+            "errors": ["<short error snippets>"]
+          }
+        }
+        """
+    else:
+        evaluation_prompt += """
+        ### Required JSON
+        {
+          "same_meaning": {
+            "level": <int 0-10>,
+            "details": "<brief explanation of main differences with examples>"
+          },
+          "same_lang": {
+            "consistent": <boolean>,
+            "originalLanguage": "<ISO-639-1 code or name>",
+            "humanisedLanguage": "<ISO-639-1 code or name>"
+          },
+          "missing_information": {
+            "level": <int 0-10>,
+            "missingInfo": ["<items omitted>"],
+            "addedInfo": ["<items added>"]
+          },
+          "grammar": {
+            "level": <int 0-10>,
+            "errors": ["<short error snippets>"]
+          }
+        }
+    """
+    return evaluation_prompt

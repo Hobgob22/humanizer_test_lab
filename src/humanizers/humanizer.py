@@ -80,6 +80,7 @@ def _openai_call(text: str, model: str, api: OpenAI, system_prompt: str) -> str:
       • Rate limiting
       • 3 automatic retries with exponential back-off (2 s → 4 s → 8 s).
       • System prompt properly set in messages
+      • Retry on empty/blank responses
     """
     for attempt in range(1, 4):
         try:
@@ -95,7 +96,20 @@ def _openai_call(text: str, model: str, api: OpenAI, system_prompt: str) -> str:
                 max_tokens=2048,
                 timeout=300,  # 5 minute timeout
             )
-            return resp.choices[0].message.content.strip()
+            result = resp.choices[0].message.content.strip()
+            
+            # Check for empty or blank response
+            if not result or result.isspace():
+                if attempt < 3:
+                    print(f"⚠️ Empty response from OpenAI (attempt {attempt}/3), retrying...")
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    # If all retries failed, return original text as fallback
+                    print(f"❌ All retries failed for OpenAI, returning original text")
+                    return text
+            
+            return result
 
         except Exception as exc:
             if attempt == 3:
@@ -109,6 +123,7 @@ def _claude_call(text: str, model: str, system_prompt: str) -> str:
       • Rate limiting
       • 3 automatic retries with exponential back-off
       • System prompt properly set
+      • Retry on empty/blank responses
     """
     for attempt in range(1, 4):
         try:
@@ -126,9 +141,22 @@ def _claude_call(text: str, model: str, system_prompt: str) -> str:
             
             # Extract text from response
             if hasattr(response.content[0], 'text'):
-                return response.content[0].text.strip()
+                result = response.content[0].text.strip()
             else:
-                return str(response.content).strip()
+                result = str(response.content).strip()
+            
+            # Check for empty or blank response
+            if not result or result.isspace():
+                if attempt < 3:
+                    print(f"⚠️ Empty response from Claude (attempt {attempt}/3), retrying...")
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    # If all retries failed, return original text as fallback
+                    print(f"❌ All retries failed for Claude, returning original text")
+                    return text
+            
+            return result
                 
         except Exception as exc:
             msg = str(exc).lower()
@@ -181,9 +209,23 @@ def _gemini_generate(model_id: str, text: str, system_prompt: str, *, max_retrie
 
 
 def _gemini_call(text: str, model: str, system_prompt: str) -> str:
-    """Call Gemini with proper system instructions."""
-    resp = _gemini_generate(model, text, system_prompt)
-    return resp.text.strip()
+    """Call Gemini with proper system instructions and retry on empty responses."""
+    for attempt in range(1, 4):
+        resp = _gemini_generate(model, text, system_prompt)
+        result = resp.text.strip()
+        
+        # Check for empty or blank response
+        if not result or result.isspace():
+            if attempt < 3:
+                print(f"⚠️ Empty response from Gemini (attempt {attempt}/3), retrying...")
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                # If all retries failed, return original text as fallback
+                print(f"❌ All retries failed for Gemini, returning original text")
+                return text
+        
+        return result
 
 
 def _select_prompt(

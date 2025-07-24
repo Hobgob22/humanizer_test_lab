@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import math  # ← pagination helper
+import time # Added for retry logic
 
 
 from src.pages.utils import (
@@ -23,9 +24,15 @@ from src.results_db import list_runs, load_run
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@st.cache_data(ttl=3600, show_spinner="Loading AI detection scores...")
+def _cached_load_ai_scores(doc_path: str) -> Dict:
+    """Cached version of load_ai_scores to prevent repeated API calls."""
+    return load_ai_scores(Path(doc_path))
+
+
 # ═════════════════════ DOCUMENTS BROWSER PAGE ═════════════════════════
 def page_browser() -> None:
-    """Main entry for the “Document Browser” Streamlit page."""
+    """Main entry for the "Document Browser" Streamlit page."""
     st.header("📁 Document Browser")
     st.info("Analyze individual documents and compare them with benchmark runs")
 
@@ -51,7 +58,7 @@ def page_browser() -> None:
 
     # ── 3 · Pre-analyse all button (concurrent) ─────────────────────────
     if st.button("⚡ Analyze all documents", use_container_width=True):
-        _pre_analyse_all(docs)
+        _pre_analyse_all_optimized(docs)
 
     # ── 4 · Filename filter ─────────────────────────────────────────────
     search_term: str = st.text_input(
@@ -70,7 +77,6 @@ def page_browser() -> None:
     if compare_run == "None":
         compare_run = None
 
-    # ── 6 · Page intro & legend ─────────────────────────────────────────
     # ── 6 · Page intro & legend  +  pagination  ─────────────────────────
     page_size    = 10
     total_docs   = len(docs)
@@ -80,73 +86,115 @@ def page_browser() -> None:
 
     st.subheader(f"📄 Documents ({total_docs} total) – Page {curr_page + 1}/{total_pages}")
 
-    with st.expander("ℹ️ What AI-detection scores mean", expanded=False):
-        st.markdown(
-            """
-            **0 – 0.1** very low (looks human)  
-            **0.1 – 0.3** low  
-            **0.3 – 0.7** moderate  
-            **0.7 – 0.9** high  
-            **0.9 – 1.0** very high (clearly AI)
+    # ── pagination controls ──────────────────────────────────────────────
+    if total_pages > 1:
+        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+        with col2:
+            if st.button("⬅️ Previous", disabled=curr_page == 0):
+                st.session_state.doc_page = curr_page - 1
+                st.rerun()
+        with col3:
+            # Direct page jump
+            new_page = st.number_input(
+                "Jump to page:",
+                min_value=1,
+                max_value=total_pages,
+                value=curr_page + 1,
+                step=1,
+            ) - 1
+            if new_page != curr_page:
+                st.session_state.doc_page = new_page
+                st.rerun()
+        with col4:
+            if st.button("➡️ Next", disabled=curr_page == total_pages - 1):
+                st.session_state.doc_page = curr_page + 1
+                st.rerun()
 
-            *Both GPTZero and Sapling provide document- and paragraph-level scores.*
-            """
-        )
-
-    # ── navigation controls ────────────────────────────────────────────
-    nav_prev, nav_next = st.columns([1, 1])
-    with nav_prev:
-        if st.button("⬅️ Prev", disabled=curr_page == 0, key="doc_prev"):
-            st.session_state["doc_page"] = curr_page - 1
-            st.experimental_rerun()
-    with nav_next:
-        if st.button("Next ➡️", disabled=curr_page >= total_pages - 1, key="doc_next"):
-            st.session_state["doc_page"] = curr_page + 1
-            st.experimental_rerun()
-
-    # ── 7 · Render only the current slice of documents ─────────────────
+    # ── show current page of documents ───────────────────────────────────
     start_idx = curr_page * page_size
-    end_idx   = start_idx + page_size
-    for doc_path in docs[start_idx:end_idx]:
-        _display_single_doc(doc_path, compare_run)
+    end_idx = min(start_idx + page_size, total_docs)
+    page_docs = docs[start_idx:end_idx]
+
+    for doc_path in page_docs:
+        _display_single_doc_optimized(doc_path, compare_run)
 
 
 # ═════════════════════ helpers ═════════════════════════════════════════
-def _pre_analyse_all(docs: List[Path]) -> None:
+def _pre_analyse_all_optimized(docs: List[Path]) -> None:
     """
-    Pre-load AI scores for every document concurrently
-    so later expands are instant.
+    Optimized pre-loading with better progress tracking and error handling.
     """
-    cache: Dict[str, Dict] = st.session_state.setdefault("score_cache", {})
-    remaining = [d for d in docs if d.name not in cache]
+    # Check which documents need analysis (not in cache)
+    remaining = []
+    for doc in docs:
+        try:
+            # Try to get from cache without computing
+            _cached_load_ai_scores(str(doc))
+        except:
+            remaining.append(doc)
+    
     if not remaining:
-        st.info("All selected documents are already analysed ✅")
+        st.info("✅ All selected documents are already analyzed!")
         return
 
-    progress = st.progress(0.0, text="Starting analysis…")
-    status_box = st.empty()
+    st.info(f"🔄 Analyzing {len(remaining)} documents (cached: {len(docs) - len(remaining)})")
+    
+    progress_bar = st.progress(0.0, text="Starting analysis...")
+    status_container = st.container()
+    
+    # Reduce max workers to prevent API rate limiting
+    max_workers = min(4, len(remaining))  # Reduced from 8 to 4
+    
+    completed = 0
+    errors = []
+    
+    def _load_with_retry(doc_path: Path) -> None:
+        """Load with basic retry logic."""
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                _cached_load_ai_scores(str(doc_path))
+                return
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    errors.append(f"{doc_path.name}: {str(e)}")
+                else:
+                    time.sleep(1)  # Brief delay before retry
 
-    def _load(doc_path: Path) -> None:
-        cache[doc_path.name] = load_ai_scores(doc_path)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_doc = {executor.submit(_load_with_retry, doc): doc for doc in remaining}
+        
+        for future in concurrent.futures.as_completed(future_to_doc):
+            completed += 1
+            doc = future_to_doc[future]
+            
+            progress = completed / len(remaining)
+            progress_bar.progress(progress, text=f"Analyzed {doc.name} ({completed}/{len(remaining)})")
+    
+    progress_bar.empty()
+    
+    if errors:
+        with status_container:
+            st.warning(f"⚠️ {len(errors)} documents failed analysis:")
+            for error in errors[:5]:  # Show first 5 errors
+                st.caption(f"• {error}")
+            if len(errors) > 5:
+                st.caption(f"... and {len(errors) - 5} more")
+    else:
+        with status_container:
+            st.success(f"✅ Successfully analyzed all {len(remaining)} documents!")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(remaining))) as ex:
-        futures = {ex.submit(_load, p): p for p in remaining}
-        for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
-            doc_name = futures[fut].name
-            progress.progress(i / len(remaining), text=f"Analysed {doc_name}")
-    progress.empty()
-    status_box.success(f"Finished analysing {len(remaining)} document(s) ✅")
 
-
-def _display_single_doc(path: Path, compare_run: str | None) -> None:
-    """Render one document card with expandable details."""
+def _display_single_doc_optimized(path: Path, compare_run: str | None) -> None:
+    """Optimized document display with lazy loading."""
     with st.expander(f"📄 {path.name}", expanded=False):
-        # Cache expensive AI-score look-ups in session state
-        cache: Dict[str, Dict] = st.session_state.setdefault("score_cache", {})
-        if path.name not in cache:
-            with st.spinner("Analyzing document…"):
-                cache[path.name] = load_ai_scores(path)
-        doc = cache[path.name]
+        try:
+            # Use cached loading
+            doc = _cached_load_ai_scores(str(path))
+        except Exception as e:
+            st.error(f"❌ Failed to analyze document: {str(e)}")
+            st.caption("This could be due to API rate limits or document processing issues.")
+            return
 
         # ── meta info ──────────────────────────────────────────────────
         col1, col2, col3 = st.columns(3)

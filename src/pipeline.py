@@ -44,6 +44,7 @@ from .config import (
     HUMANIZER_MAX_WORKERS, GEMINI_MAX_WORKERS, DETECTOR_MAX_WORKERS,
     SAPLING_MAX_CONCURRENT,
     OPENAI_API_KEY, HUMANIZER_OPENAI_API_KEY,
+    MIN_WORDS_PARAGRAPH,
 )
 from .detectors import gptzero, sapling
 from .docx_utils import extract_paragraphs_with_type
@@ -317,17 +318,22 @@ def _humanize_doc(text: str, model: str, log=None) -> str:
     _stage(f"Doc humanization DONE • {model} • {elapsed:.1f}s", log)
     return out
 
-def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> List[str]:
+def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> Tuple[List[str], List[Dict]]:
     """
-    Paragraph-wise humanisation with a single executor.
+    Paragraph-wise humanisation with mismatch tracking and pair storage.
+    Returns (humanized_paragraphs, paragraph_pair_info)
+    
+    paragraph_pair_info contains the actual original→humanized pairs for each paragraph,
+    including mismatch information and quality evaluation pairing.
     """
     _stage(f"Para humanization START • {model} • {len(paragraphs)} paragraphs", log)
     start_time = time.time()
     if not paragraphs:
-        return []
+        return [], []
 
     max_workers = min(HUMANIZER_MAX_WORKERS, len(paragraphs))
     out = [None] * len(paragraphs)
+    pair_info = [None] * len(paragraphs)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         fut2idx = {
@@ -338,7 +344,41 @@ def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> List[st
         try:
             for fut in as_completed(fut2idx):
                 idx = fut2idx[fut]
-                out[idx] = fut.result()
+                original_para = paragraphs[idx]
+                humanized_text = fut.result()
+                
+                # Split humanized text into paragraphs (by double newlines or single newlines)
+                received_paras = [p.strip() for p in humanized_text.split('\n\n') if p.strip()]
+                if not received_paras:
+                    # Fallback: split by single newlines
+                    received_paras = [p.strip() for p in humanized_text.split('\n') if p.strip()]
+                if not received_paras:
+                    # Last fallback: treat as single paragraph
+                    received_paras = [humanized_text.strip()] if humanized_text.strip() else [""]
+                
+                # Detect mismatch: sent 1 paragraph, received N paragraphs
+                is_mismatch = len(received_paras) != 1
+                
+                # The text used for document assembly and quality evaluation is the same
+                assembly_text = "\n\n".join(received_paras) if received_paras else ""
+
+                # Store the actual pair information
+                pair_info[idx] = {
+                    "original_paragraph": original_para,
+                    "original_index": idx,
+                    "humanized_paragraphs": received_paras,
+                    "is_mismatch": is_mismatch,
+                    "sent_count": 1,
+                    "received_count": len(received_paras),
+                    # For quality evaluation, use the FULL received text
+                    "quality_evaluation_text": assembly_text,
+                    # For document assembly, also use the FULL received text
+                    "document_assembly_text": assembly_text
+                }
+                
+                # For output (document assembly), use appropriate text
+                out[idx] = pair_info[idx]["document_assembly_text"]
+                
                 completed += 1
                 if completed % 5 == 0 or completed == len(paragraphs):
                     _maybe_log(f"Para progress: {completed}/{len(paragraphs)} • {model}", log)
@@ -348,7 +388,13 @@ def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> List[st
 
     elapsed = time.time() - start_time
     _stage(f"Para humanization DONE • {model} • {elapsed:.1f}s total", log)
-    return out
+    
+    # Count mismatches
+    total_mismatches = sum(1 for info in pair_info if info and info["is_mismatch"])
+    if total_mismatches > 0:
+        _maybe_log(f"⚠️ Para mode mismatches: {total_mismatches}/{len(paragraphs)} paragraphs", log)
+    
+    return out, pair_info
 
 # ═══════════════ 7 · Paragraph helper ════════════════════════════════
 def _merge_heading_content(para_objs, hum_content):
@@ -359,6 +405,63 @@ def _merge_heading_content(para_objs, hum_content):
         else:
             out.append(p["text"])
     return out
+
+def _determine_paragraph_types(paragraphs: List[str]) -> List[str]:
+    """
+    Determine paragraph types for humanized text using the same logic as docx_utils.
+    Returns list of 'content' or 'heading' for each paragraph.
+    """
+    types = []
+    for para in paragraphs:
+        text = para.strip()
+        if not text:
+            continue
+        para_type = 'content' if len(text.split()) >= MIN_WORDS_PARAGRAPH else 'heading'
+        types.append(para_type)
+    return types
+
+def _detect_paragraph_mismatch(orig_para_objs: List[Dict], hum_paras: List[str]) -> Tuple[bool, str]:
+    """
+    Detect paragraph structure mismatch between original and humanized documents.
+    
+    Returns:
+        Tuple[bool, str]: (is_mismatch, reason)
+        
+    Checks:
+        1. Count mismatch: Different number of paragraphs
+        2. Structure mismatch: Different sequence of heading/content types
+    """
+    # Get original types
+    orig_types = [p["type"] for p in orig_para_objs]
+    
+    # Determine humanized types
+    hum_types = _determine_paragraph_types(hum_paras)
+    
+    # Check 1: Count mismatch
+    if len(orig_types) != len(hum_types):
+        return True, f"Count mismatch: original has {len(orig_types)} paragraphs, humanized has {len(hum_types)}"
+    
+    # Check 2: Structure mismatch (same count but different type sequence)
+    if orig_types != hum_types:
+        # Find first mismatch position for better error message
+        mismatch_pos = -1
+        for i, (orig_type, hum_type) in enumerate(zip(orig_types, hum_types)):
+            if orig_type != hum_type:
+                mismatch_pos = i
+                break
+        
+        orig_structure = "->".join(orig_types)
+        hum_structure = "->".join(hum_types)
+        
+        if mismatch_pos >= 0:
+            reason = f"Structure mismatch at position {mismatch_pos + 1}: expected '{orig_types[mismatch_pos]}', got '{hum_types[mismatch_pos]}'."
+        else:
+            reason = f"Structure mismatch"
+        
+        return True, reason
+    
+    # No mismatch detected
+    return False, "No mismatch"
 
 # ═══════════════ 8 · Draft generator ════════════════════════════════
 def _generate_single_draft(
@@ -386,8 +489,38 @@ def _generate_single_draft(
     if is_para_folder:
         # These folders contain single paragraphs, so use para mode
         hum_text = humanize(orig_text, model, "para", log=log)
-        doc_paras = [hum_text.strip()]  # Single paragraph result
+        
+        # Analyze the result for paragraph-level mismatch
+        received_paras = [p.strip() for p in hum_text.split('\n\n') if p.strip()]
+        if not received_paras:
+            # Fallback: split by single newlines
+            received_paras = [p.strip() for p in hum_text.split('\n') if p.strip()]
+        if not received_paras:
+            # Last fallback: treat as single paragraph
+            received_paras = [hum_text.strip()] if hum_text.strip() else [""]
+        
+        # For para folders, we sent 1 paragraph and expect 1 back
+        is_mismatch = len(received_paras) != 1
+        para_level_mismatches = 1 if is_mismatch else 0
+        has_para_mismatches = is_mismatch
+        
+        # Create single pair info for consistency
+        para_pair_info = [{
+            "original_paragraph": orig_text,
+            "original_index": 0,
+            "humanized_paragraphs": received_paras,
+            "is_mismatch": is_mismatch,
+            "sent_count": 1,
+            "received_count": len(received_paras),
+            "quality_evaluation_text": received_paras[0] if received_paras else "",
+            "document_assembly_text": "\n\n".join(received_paras) if len(received_paras) > 1 else (received_paras[0] if received_paras else "")
+        }]
+        
+        doc_paras = [received_paras[0] if received_paras else ""]  # Use first paragraph for document assembly
         _maybe_log(f"Para-folder humanization complete • {model}", log)
+        
+        if is_mismatch:
+            _maybe_log(f"⚠️ Para folder mismatch: sent 1 paragraph, received {len(received_paras)}", log)
         
         specs.append({
             "model": model,
@@ -395,6 +528,9 @@ def _generate_single_draft(
             "iter": iteration,
             "humanized_text": hum_text,
             "humanized_paras_resolved": doc_paras,
+            "para_pair_info": para_pair_info,  # Store the pair info
+            "para_level_mismatches": para_level_mismatches,  # Count of mismatched paragraphs
+            "has_para_level_mismatches": has_para_mismatches,  # Boolean flag
         })
     else:
         # Regular folders (ai_texts, human_texts)
@@ -417,10 +553,14 @@ def _generate_single_draft(
         if include_para:
             content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
             if content_paras:
-                hum_para_content = _humanize_paragraphs(content_paras, model, log)
+                hum_para_content, para_pair_info = _humanize_paragraphs(content_paras, model, log)
                 hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
                 _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
 
+                # Check if any paragraphs are mismatched
+                para_level_mismatches = sum(1 for info in para_pair_info if info and info["is_mismatch"])
+                has_para_mismatches = para_level_mismatches > 0
+                
                 specs.append({
                     "model": model,
                     "mode": "para",
@@ -428,6 +568,9 @@ def _generate_single_draft(
                     "humanized_paras": hum_para_paras,
                     "humanized_paras_resolved": hum_para_paras,
                     "humanized_text": "\n\n".join(hum_para_paras),
+                    "para_pair_info": para_pair_info,  # Store actual original→humanized pairs
+                    "para_level_mismatches": para_level_mismatches,  # Count of mismatched paragraphs
+                    "has_para_level_mismatches": has_para_mismatches,  # Boolean flag
                 })
 
     _stage(f"✓ Draft generation done • model={model} • iter={iteration+1}", log)
@@ -516,43 +659,433 @@ def _assemble_per_para_stats(
     orig: List[str], hum: List[str],
     ai_before: Dict[str, List[float]], ai_after: Dict[str, List[float]],
     quality_results: Dict[Tuple[str, str], Dict[str, bool]],
+    para_objs: List[Dict[str, str]],  # paragraph objects with type info
+    para_pair_info: List[Dict] = None,  # NEW: actual original→humanized pairs
 ):
+    """
+    Assemble per-paragraph statistics with proper heading/content separation.
+    
+    - Content paragraphs: included in quality stats and metrics
+    - Headings: included in details for display but excluded from aggregated quality stats
+    - Length deviations calculated at both paragraph and draft level
+    - Enhanced citation preservation metrics
+    - Paragraph-level mismatch tracking (for para mode)
+    """
     flags_total = {k: 0 for k in _EXPECTED_FLAGS}
+    
+    # New numeric level aggregators
+    same_meaning_levels = []
+    missing_info_levels = []
     grammar_scores = []
     all_grammar_errors = []
+    
+    # Length deviation tracking
+    para_length_deviations = []  # percentage deviations for content paragraphs
+    
+    # Citation tracking for enhanced metrics
+    paragraphs_with_citations_orig = 0  # count of original paragraphs with citations
+    paragraphs_citations_preserved = 0   # count where ALL citations preserved (Gemini)
+    paragraphs_citation_content_ok = 0   # count where citation content is regex-preserved
+    total_citations_humanized = 0       # total citations in humanized version
+    exact_match_citations = 0           # citations with exact ID match
+    
+    # Details for UI display (includes both headings and content)
     details: List[Dict] = []
+    content_para_count = 0  # track actual content paragraphs
 
     for idx, (o, h) in enumerate(zip(orig, hum)):
+        para_type = para_objs[idx]["type"] if idx < len(para_objs) else "content"
         raw = quality_results.get((_hash(o), _hash(h)), {})
         
-        # Extract boolean flags (backward compatible)
-        p_flags = {k: bool(raw.get(k, False)) for k in _EXPECTED_FLAGS}
-        for k, v in p_flags.items():
-            if v: flags_total[k] += 1
+        # Word counts for length deviation
+        wc_before = len(o.split())
+        wc_after = len(h.split())
         
-        # Extract grammar info (new fields)
-        grammar_score = raw.get("grammar_score", None)
-        grammar_errors = raw.get("grammar_errors", [])
-        
-        if grammar_score is not None:
-            grammar_scores.append(grammar_score)
-        all_grammar_errors.extend(grammar_errors)
-        
-        details.append({
+        if para_type == "content":
+            content_para_count += 1
+            
+            # Extract boolean flags (backward compatible)
+            p_flags = {}
+            for k in _EXPECTED_FLAGS:
+                value = raw.get(k)
+                if value is None:
+                    # For citation metrics, None means not applicable (no citations)
+                    p_flags[k] = None
+                else:
+                    p_flags[k] = bool(value)
+                    # Only count in totals if not None
+                    if p_flags[k] is True:
+                        flags_total[k] += 1
+            
+            # Extract new numeric levels
+            same_meaning_level = raw.get("same_meaning_level")
+            missing_info_level = raw.get("missing_info_level") 
+            grammar_level = raw.get("grammar_level")
+            
+            if same_meaning_level is not None:
+                same_meaning_levels.append(same_meaning_level)
+            if missing_info_level is not None:
+                missing_info_levels.append(missing_info_level)
+            if grammar_level is not None:
+                grammar_scores.append(grammar_level)
+            
+            # Grammar errors
+            grammar_errors = raw.get("grammar_errors", [])
+            all_grammar_errors.extend(grammar_errors)
+            
+            # Length deviation (percentage) for content paragraphs
+            if wc_before > 0:
+                length_deviation = ((wc_after - wc_before) / wc_before) * 100
+                para_length_deviations.append(length_deviation)
+            
+            # Citation preservation analysis for content paragraphs
+            orig_citations = _citations(o)
+            hum_citations = _citations(h)
+            
+            if orig_citations:  # This paragraph has citations originally
+                paragraphs_with_citations_orig += 1
+                
+                # Check citation_preserved from quality results (Gemini evaluation)
+                if p_flags.get("citation_preserved") is True:
+                    paragraphs_citations_preserved += 1
+                
+                # Check citation_content_ok from quality results (regex check)
+                if p_flags.get("citation_content_ok") is True:
+                    paragraphs_citation_content_ok += 1
+            
+            # Count humanized citations for exact match analysis
+            if hum_citations:
+                total_citations_humanized += len(hum_citations)
+                # Check exact matches (simplified - could be enhanced with regex)
+                for hum_cite in hum_citations:
+                    if hum_cite in orig_citations:
+                        exact_match_citations += 1
+            
+        else:
+            # Heading: empty quality flags for display but don't affect aggregates
+            p_flags = {k: None for k in _EXPECTED_FLAGS}  # None indicates no check performed
+            same_meaning_level = None
+            missing_info_level = None
+            grammar_level = None
+            grammar_errors = []
+
+        # Get paragraph mismatch info for this paragraph (content paragraphs only)
+        content_para_idx = sum(1 for i in range(idx) if para_objs[i]["type"] == "content") if para_type == "content" else -1
+        para_mismatch_data = None
+        if para_pair_info and para_type == "content" and content_para_idx < len(para_pair_info):
+            para_mismatch_data = para_pair_info[content_para_idx]
+
+        # Add to details (for both headings and content)
+        detail_entry = {
             "paragraph": idx + 1,
-            "wc_before": len(o.split()), "wc_after": len(h.split()),
+            "type": para_type,
+            "wc_before": wc_before, 
+            "wc_after": wc_after,
             "ai_before": {d: ai_before.get(d, [None]*len(orig))[idx] for d in ("gptzero","sapling")},
             "ai_after":  {d: ai_after.get(d, [None]*len(orig))[idx] for d in ("gptzero","sapling")},
             "flags": p_flags,
-            "grammar_score": grammar_score,
+            "same_meaning_level": same_meaning_level,
+            "missing_info_level": missing_info_level, 
+            "grammar_level": grammar_level,
             "grammar_errors": grammar_errors,
-        })
+            # Additional details from quality check
+            "missing_items": raw.get("missing_items", []) if para_type == "content" else [],
+            "added_items": raw.get("added_items", []) if para_type == "content" else [],
+            "same_meaning_details": raw.get("same_meaning_details", "") if para_type == "content" else "",
+        }
+        
+        # Add paragraph mismatch information for content paragraphs
+        if para_type == "content" and para_mismatch_data:
+            detail_entry.update({
+                "para_is_mismatch": para_mismatch_data["is_mismatch"],
+                "para_sent_count": para_mismatch_data["sent_count"],
+                "para_received_count": para_mismatch_data["received_count"],
+                "para_received_paragraphs": para_mismatch_data["humanized_paragraphs"],  # Updated key
+                "para_original_paragraph": para_mismatch_data["original_paragraph"],  # Store original for comparison
+                "para_quality_evaluation_text": para_mismatch_data["quality_evaluation_text"],  # Text used for quality eval
+            })
+        else:
+            detail_entry.update({
+                "para_is_mismatch": False,
+                "para_sent_count": 1,
+                "para_received_count": 1,
+                "para_received_paragraphs": [],
+                "para_original_paragraph": "",
+                "para_quality_evaluation_text": "",
+            })
+        
+        details.append(detail_entry)
     
-    # Add aggregate grammar info to flag counts (backward compatible)
+    # Calculate aggregate metrics based on CONTENT paragraphs only
+    # Add backward-compatible aggregate scores
     flags_total["grammar_score"] = sum(grammar_scores) / len(grammar_scores) if grammar_scores else None
     flags_total["grammar_errors"] = all_grammar_errors
     
+    # NEW: Add numeric level averages
+    flags_total["same_meaning_level_avg"] = sum(same_meaning_levels) / len(same_meaning_levels) if same_meaning_levels else None
+    flags_total["missing_info_level_avg"] = sum(missing_info_levels) / len(missing_info_levels) if missing_info_levels else None
+    
+    # NEW: Add length deviation metrics
+    flags_total["para_length_deviation_avg"] = sum(para_length_deviations) / len(para_length_deviations) if para_length_deviations else 0
+    flags_total["para_length_deviations"] = para_length_deviations  # for distribution analysis
+    
+    # NEW: Enhanced citation preservation metrics  
+    flags_total["paragraph_citation_preservation_rate"] = (
+        (paragraphs_citations_preserved / paragraphs_with_citations_orig * 100) 
+        if paragraphs_with_citations_orig > 0 else 100  # 100% if no citations to preserve
+    )
+    flags_total["paragraph_citation_content_ok_rate"] = (
+        (paragraphs_citation_content_ok / paragraphs_with_citations_orig * 100)
+        if paragraphs_with_citations_orig > 0 else 100  # 100% if no citations to check
+    )
+    flags_total["citation_exact_match_rate"] = (
+        (paragraphs_citation_content_ok / paragraphs_with_citations_orig * 100)
+        if paragraphs_with_citations_orig > 0 else 100  # 100% if no citations to check
+    )
+    
+    # Additional metadata
+    flags_total["content_paragraph_count"] = content_para_count
+    flags_total["total_segments"] = len(orig)
+    
     return details, flags_total
+
+
+def _assemble_per_para_stats_from_pairs(
+    ai_before: Dict[str, List[float]], ai_after: Dict[str, List[float]],
+    quality_results: Dict[Tuple[str, str], Dict[str, bool]],
+    para_objs: List[Dict[str, str]],  # paragraph objects with type info
+    para_pair_info: List[Dict],  # actual original→humanized pairs
+    para_scores_gz: Dict[str, float], para_scores_sp: Dict[str, float]
+):
+    """
+    Assemble per-paragraph statistics using para_pair_info for cases with document-level mismatches.
+    This ensures we show paragraph analysis even when document structure doesn't match.
+    """
+    flags_total = {k: 0 for k in _EXPECTED_FLAGS}
+    
+    # New numeric level aggregators
+    same_meaning_levels = []
+    missing_info_levels = []
+    grammar_scores = []
+    all_grammar_errors = []
+    
+    # Length deviation tracking
+    para_length_deviations = []  # percentage deviations for content paragraphs
+    
+    # Citation tracking for enhanced metrics
+    paragraphs_with_citations_orig = 0  # count of original paragraphs with citations
+    paragraphs_citations_preserved = 0   # count where ALL citations preserved (Gemini)
+    paragraphs_citation_content_ok = 0   # count where citation content is regex-preserved
+    total_citations_humanized = 0       # total citations in humanized version
+    exact_match_citations = 0           # citations with exact ID match
+    
+    # Details for UI display (includes both headings and content)
+    details: List[Dict] = []
+    content_para_count = 0  # track actual content paragraphs
+    content_pair_idx = 0    # track position in para_pair_info
+
+    # Go through all original paragraphs and create details
+    for idx, para_obj in enumerate(para_objs):
+        para_type = para_obj["type"]
+        original_text = para_obj["text"]
+        
+        if para_type == "content":
+            # For content paragraphs, use para_pair_info
+            if content_pair_idx < len(para_pair_info) and para_pair_info[content_pair_idx]:
+                pair_info = para_pair_info[content_pair_idx]
+                original_para = pair_info["original_paragraph"]
+                humanized_text = pair_info["quality_evaluation_text"]
+                is_mismatch = pair_info["is_mismatch"]
+                
+                # Get quality results for this exact pair
+                raw = quality_results.get((_hash(original_para), _hash(humanized_text)), {})
+                
+                # Word counts
+                wc_before = len(original_para.split())
+                wc_after = len(humanized_text.split())
+                
+                content_para_count += 1
+                
+                # Extract boolean flags
+                p_flags = {}
+                for k in _EXPECTED_FLAGS:
+                    value = raw.get(k)
+                    if value is None:
+                        p_flags[k] = None
+                    else:
+                        p_flags[k] = bool(value)
+                        if p_flags[k] is True:
+                            flags_total[k] += 1
+                
+                # Extract new numeric levels
+                same_meaning_level = raw.get("same_meaning_level")
+                missing_info_level = raw.get("missing_info_level") 
+                grammar_level = raw.get("grammar_level")
+                
+                if same_meaning_level is not None:
+                    same_meaning_levels.append(same_meaning_level)
+                if missing_info_level is not None:
+                    missing_info_levels.append(missing_info_level)
+                if grammar_level is not None:
+                    grammar_scores.append(grammar_level)
+                
+                # Grammar errors
+                grammar_errors = raw.get("grammar_errors", [])
+                all_grammar_errors.extend(grammar_errors)
+                
+                # Length deviation
+                if wc_before > 0:
+                    length_deviation = ((wc_after - wc_before) / wc_before) * 100
+                    para_length_deviations.append(length_deviation)
+                
+                # Citation preservation analysis
+                orig_citations = _citations(original_para)
+                hum_citations = _citations(humanized_text)
+                
+                if orig_citations:
+                    paragraphs_with_citations_orig += 1
+                    if p_flags.get("citation_preserved") is True:
+                        paragraphs_citations_preserved += 1
+                    if p_flags.get("citation_content_ok") is True:
+                        paragraphs_citation_content_ok += 1
+                
+                if hum_citations:
+                    total_citations_humanized += len(hum_citations)
+                    for hum_cite in hum_citations:
+                        if hum_cite in orig_citations:
+                            exact_match_citations += 1
+                
+                # Get AI scores for this paragraph
+                gz_before = para_scores_gz.get(_hash(original_para))
+                sp_before = para_scores_sp.get(_hash(original_para))
+                gz_after = para_scores_gz.get(_hash(humanized_text))
+                sp_after = para_scores_sp.get(_hash(humanized_text))
+                
+                content_pair_idx += 1
+            else:
+                # No pair info available for this content paragraph
+                wc_before = len(original_text.split())
+                wc_after = wc_before  # assume no change
+                p_flags = {k: None for k in _EXPECTED_FLAGS}
+                same_meaning_level = None
+                missing_info_level = None
+                grammar_level = None
+                grammar_errors = []
+                raw = {}
+                is_mismatch = False
+                gz_before = gz_after = sp_before = sp_after = None
+        else:
+            # For headings, create basic entry
+            wc_before = len(original_text.split())
+            wc_after = wc_before  # headings typically don't change
+            p_flags = {k: None for k in _EXPECTED_FLAGS}
+            same_meaning_level = None
+            missing_info_level = None
+            grammar_level = None
+            grammar_errors = []
+            raw = {}
+            is_mismatch = False
+            
+            # Get AI scores for heading
+            gz_before = para_scores_gz.get(_hash(original_text))
+            sp_before = para_scores_sp.get(_hash(original_text))
+            gz_after = gz_before  # headings typically don't change
+            sp_after = sp_before
+
+        # Create detail entry
+        detail_entry = {
+            "paragraph": idx + 1,
+            "type": para_type,
+            "wc_before": wc_before, 
+            "wc_after": wc_after,
+            "ai_before": {"gptzero": gz_before, "sapling": sp_before},
+            "ai_after":  {"gptzero": gz_after, "sapling": sp_after},
+            "flags": p_flags,
+            "same_meaning_level": same_meaning_level,
+            "missing_info_level": missing_info_level, 
+            "grammar_level": grammar_level,
+            "grammar_errors": grammar_errors,
+            "missing_items": raw.get("missing_items", []) if para_type == "content" else [],
+            "added_items": raw.get("added_items", []) if para_type == "content" else [],
+            "same_meaning_details": raw.get("same_meaning_details", "") if para_type == "content" else "",
+        }
+        
+        # Add paragraph mismatch information for content paragraphs
+        if para_type == "content":
+            # For content paragraphs, use the pair info we just processed
+            if content_pair_idx > 0 and (content_pair_idx - 1) < len(para_pair_info):
+                pair_data = para_pair_info[content_pair_idx - 1]
+                if pair_data:
+                    detail_entry.update({
+                        "para_is_mismatch": pair_data["is_mismatch"],
+                        "para_sent_count": pair_data["sent_count"],
+                        "para_received_count": pair_data["received_count"],
+                        "para_received_paragraphs": pair_data["humanized_paragraphs"],
+                        "para_original_paragraph": pair_data["original_paragraph"],
+                        "para_quality_evaluation_text": pair_data["quality_evaluation_text"],
+                    })
+                else:
+                    detail_entry.update({
+                        "para_is_mismatch": False,
+                        "para_sent_count": 1,
+                        "para_received_count": 1,
+                        "para_received_paragraphs": [],
+                        "para_original_paragraph": "",
+                        "para_quality_evaluation_text": "",
+                    })
+            else:
+                detail_entry.update({
+                    "para_is_mismatch": False,
+                    "para_sent_count": 1,
+                    "para_received_count": 1,
+                    "para_received_paragraphs": [],
+                    "para_original_paragraph": "",
+                    "para_quality_evaluation_text": "",
+                })
+        else:
+            # For headings, no pair info
+            detail_entry.update({
+                "para_is_mismatch": False,
+                "para_sent_count": 1,
+                "para_received_count": 1,
+                "para_received_paragraphs": [],
+                "para_original_paragraph": "",
+                "para_quality_evaluation_text": "",
+            })
+        
+        details.append(detail_entry)
+    
+    # Calculate aggregate metrics based on CONTENT paragraphs only
+    flags_total["grammar_score"] = sum(grammar_scores) / len(grammar_scores) if grammar_scores else None
+    flags_total["grammar_errors"] = all_grammar_errors
+    flags_total["same_meaning_level_avg"] = sum(same_meaning_levels) / len(same_meaning_levels) if same_meaning_levels else None
+    flags_total["missing_info_level_avg"] = sum(missing_info_levels) / len(missing_info_levels) if missing_info_levels else None
+    flags_total["para_length_deviation_avg"] = sum(para_length_deviations) / len(para_length_deviations) if para_length_deviations else 0
+    flags_total["para_length_deviations"] = para_length_deviations
+    
+    # Citation preservation metrics  
+    flags_total["paragraph_citation_preservation_rate"] = (
+        (paragraphs_citations_preserved / paragraphs_with_citations_orig * 100) 
+        if paragraphs_with_citations_orig > 0 else 100
+    )
+    flags_total["paragraph_citation_content_ok_rate"] = (
+        (paragraphs_citation_content_ok / paragraphs_with_citations_orig * 100)
+        if paragraphs_with_citations_orig > 0 else 100
+    )
+    flags_total["citation_exact_match_rate"] = (
+        (paragraphs_citation_content_ok / paragraphs_with_citations_orig * 100)
+        if paragraphs_with_citations_orig > 0 else 100
+    )
+    
+    # Additional metadata
+    flags_total["content_paragraph_count"] = content_para_count
+    flags_total["total_segments"] = len(details)
+    
+    return details, flags_total
+
+
+# Import citation extraction from quality module
+from .evaluation.quality import _citations
 
 # ═══════════════ 10 · Main runner ════════════════════════════════
 def run_test(doc_path: Path, models: List[str]|None=None,
@@ -653,29 +1186,43 @@ def run_test(doc_path: Path, models: List[str]|None=None,
 
     # Phase 3: Gemini quality checks (with retries)
     _stage("Phase 3: Gemini quality evaluation", logger)
-    q_pairs = {
-        (o, h) for d in drafts
-        if len(orig_paras) == len(d["humanized_paras_resolved"])
-        for o, h in zip(orig_paras, d["humanized_paras_resolved"])
-    }
+    q_pairs = set()
     
+    for d in drafts:
+        # If it's para mode, para_pair_info is the source of truth for quality pairings.
+        if d.get("mode") == "para" and d.get("para_pair_info"):
+            for pair in d["para_pair_info"]:
+                if pair:  # Ensure pair is not None
+                    q_pairs.add((pair["original_paragraph"], pair["quality_evaluation_text"]))
+        # For doc mode, or as a fallback if something went wrong with para_pair_info.
+        # This part only works if paragraph counts match.
+        elif len(orig_paras) == len(d["humanized_paras_resolved"]):
+            for o, h in zip(orig_paras, d["humanized_paras_resolved"]):
+                q_pairs.add((o, h))
+        # If it's a doc-mode draft with a mismatch, quality checks for individual paragraphs
+        # can't be paired reliably, so they would have been skipped anyway. This maintains that behavior.
+
     q_results = {}
-    for attempt in range(1, max_retries + 1):
-        try:
-            if attempt > 1:
-                _maybe_log(f"🔄 Retrying Phase 3 (attempt {attempt}/{max_retries})", logger)
-                time.sleep(min(30 * (attempt - 1), 120))
+    q_pairs_list = list(q_pairs)
+    if not q_pairs_list:
+        _maybe_log("– SKIP quality checks (no pairs)", logger)
+    else:
+        for attempt in range(1, max_retries + 1):
+            try:
+                if attempt > 1:
+                    _maybe_log(f"🔄 Retrying Phase 3 (attempt {attempt}/{max_retries})", logger)
+                    time.sleep(min(30 * (attempt - 1), 120))
+                    
+                q_results = _batch_quality_check(q_pairs_list, logger)
+                break
                 
-            q_results = _batch_quality_check(list(q_pairs), logger)
-            break
-            
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            _maybe_log(f"❌ Phase 3 error (attempt {attempt}): {exc}", logger)
-            if attempt == max_retries:
-                _maybe_log(f"⚠️ Phase 3 failed after {max_retries} attempts - continuing without quality checks", logger)
-                q_results = {}  # Continue with empty quality results
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                _maybe_log(f"❌ Phase 3 error (attempt {attempt}): {exc}", logger)
+                if attempt == max_retries:
+                    _maybe_log(f"⚠️ Phase 3 failed after {max_retries} attempts - continuing without quality checks", logger)
+                    q_results = {}  # Continue with empty quality results
 
     # Phase 4: Assembly
     _stage("Phase 4: Assembly", logger)
@@ -691,9 +1238,64 @@ def run_test(doc_path: Path, models: List[str]|None=None,
     for spec in drafts:
         hum_text  = spec["humanized_text"]
         hum_paras = spec["humanized_paras_resolved"]
-        mismatch  = len(hum_paras) != len(orig_paras)
-
+        
+        # Enhanced mismatch detection: check both count and structure
+        mismatch, mismatch_reason = _detect_paragraph_mismatch(para_objs, hum_paras)
+        
         if mismatch:
+            _maybe_log(f"⚠️ Paragraph mismatch detected: {mismatch_reason}", logger)
+
+        # Calculate draft-level length deviation for all cases
+        wc_after = sum(len(p.split()) for p in hum_paras)
+        draft_length_deviation = ((wc_after - wc_before) / wc_before) * 100 if wc_before > 0 else 0
+
+        # Try to create paragraph analysis even with document-level mismatches
+        try:
+            if not mismatch:
+                # Normal case: no document-level mismatch
+                scores_after = _assemble_scores_from_batch(
+                    hum_text, hum_paras, doc_scores_gz, doc_scores_sp,
+                    para_scores_gz, para_scores_sp
+                )
+                para_details, flag_counts = _assemble_per_para_stats(
+                    orig_paras, hum_paras,
+                    scores_before["ind_par"], scores_after["ind_par"],
+                    q_results, para_objs,
+                    spec.get("para_pair_info")  # Pass paragraph mismatch info
+                )
+            elif spec.get("mode") == "para" and spec.get("para_pair_info"):
+                # Para mode with document-level mismatch: use para_pair_info for analysis
+                base = {
+                    "gptzero": doc_scores_gz.get(_hash(hum_text)),
+                    "sapling": doc_scores_sp.get(_hash(hum_text))
+                }
+                scores_after = {
+                    "group_doc": base, "ind_doc": base,
+                    "group_par": {"gptzero": [], "sapling": []},
+                    "ind_par":   {"gptzero": [], "sapling": []}
+                }
+                
+                # Create paragraph details using para_pair_info
+                para_details, flag_counts = _assemble_per_para_stats_from_pairs(
+                    scores_before["ind_par"], scores_after["ind_par"],
+                    q_results, para_objs,
+                    spec.get("para_pair_info"),
+                    para_scores_gz, para_scores_sp
+                )
+            else:
+                # Other mismatch cases: no detailed analysis available
+                base = {
+                    "gptzero": doc_scores_gz.get(_hash(hum_text)),
+                    "sapling": doc_scores_sp.get(_hash(hum_text))
+                }
+                scores_after = {
+                    "group_doc": base, "ind_doc": base,
+                    "group_par": {"gptzero": [], "sapling": []},
+                    "ind_par":   {"gptzero": [], "sapling": []}
+                }
+                para_details, flag_counts = [], {}
+        except Exception as exc:
+            _maybe_log(f"❌ per-para assembly error: {exc}", logger)
             base = {
                 "gptzero": doc_scores_gz.get(_hash(hum_text)),
                 "sapling": doc_scores_sp.get(_hash(hum_text))
@@ -704,27 +1306,14 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                 "ind_par":   {"gptzero": [], "sapling": []}
             }
             para_details, flag_counts = [], {}
-        else:
-            try:
-                scores_after = _assemble_scores_from_batch(
-                    hum_text, hum_paras, doc_scores_gz, doc_scores_sp,
-                    para_scores_gz, para_scores_sp
-                )
-                para_details, flag_counts = _assemble_per_para_stats(
-                    orig_paras, hum_paras,
-                    scores_before["ind_par"], scores_after["ind_par"],
-                    q_results
-                )
-            except Exception as exc:
-                _maybe_log(f"❌ per-para assembly error: {exc}", logger)
-                scores_after, para_details, flag_counts = {}, [], {}
-
+        
         runs.append(_pack_run(
             spec["model"], spec["mode"], spec["iter"],
             scores_before, scores_after,
-            wc_before, sum(len(p.split()) for p in hum_paras),
+            wc_before, wc_after,
             flag_counts, para_details, mismatch, hum_text,
-            len(orig_paras), len(hum_paras)
+            len(orig_paras), len(hum_paras), draft_length_deviation,
+            mismatch_reason if mismatch else None
         ))
 
     _stage("run_test COMPLETE", logger)
@@ -741,7 +1330,9 @@ def _pack_run(model: str, mode: str, it: int,
               wc_before: int, wc_after: int,
               flag_counts: Dict[str, int], para_details: List[Dict],
               para_mismatch: bool, humanized_text: str,
-              para_count_before: int, para_count_after: int):
+              para_count_before: int, para_count_after: int,
+              draft_length_deviation: float,
+              mismatch_reason: str = None):
     return {
         "model": model, "mode": mode, "iter": it,
         "scores_before": scores_before, "scores_after": scores_after,
@@ -749,6 +1340,8 @@ def _pack_run(model: str, mode: str, it: int,
         "flag_counts": flag_counts, "paragraph_details": para_details,
         "para_mismatch": para_mismatch, "humanized_text": humanized_text,
         "para_count_before": para_count_before, "para_count_after": para_count_after,
+        "draft_length_deviation": draft_length_deviation,
+        "mismatch_reason": mismatch_reason,
     }
 
 # ═══════════════ 12 · Sequential loader ════════════════════════════
