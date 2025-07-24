@@ -5,6 +5,7 @@ Uses threading and SQLite for job tracking and status updates.
 """
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -341,23 +342,35 @@ def _run_benchmark_job(
         # Save results
         if results:
             save_job_results(job_id, results)
-            save_run(
-                run_name,
-                folders,
-                models,
-                {
-                    "docs": results, 
-                    "iterations": iterations, 
-                    "doc_counts": doc_counts,
-                    "include_doc_mode": include_doc_mode
-                }
-            )
-            update_job_status(
-                job_id,
-                JobStatus.COMPLETED,
-                processed_docs=len(docs),
-                log_entry=f"✅ Benchmark completed successfully - {len(results)} documents processed"
-            )
+            
+            # Try to save to persistent database, but don't fail the job if it fails
+            try:
+                save_run(
+                    run_name,
+                    folders,
+                    models,
+                    {
+                        "docs": results, 
+                        "iterations": iterations, 
+                        "doc_counts": doc_counts,
+                        "include_doc_mode": include_doc_mode
+                    }
+                )
+                update_job_status(
+                    job_id,
+                    JobStatus.COMPLETED,
+                    processed_docs=len(docs),
+                    log_entry=f"✅ Benchmark completed successfully - {len(results)} documents processed"
+                )
+            except Exception as db_error:
+                # Log the database error but don't fail the job
+                logging.error(f"Failed to save run to persistent database: {db_error}")
+                update_job_status(
+                    job_id,
+                    JobStatus.COMPLETED,
+                    processed_docs=len(docs),
+                    log_entry=f"✅ Benchmark completed successfully - {len(results)} documents processed (Warning: Could not save to persistent database)"
+                )
         else:
             update_job_status(
                 job_id,
