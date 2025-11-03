@@ -124,6 +124,9 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
     stats: DefaultDict[str, DefaultDict[str, DefaultDict[str, Dict]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
     )
+    
+    # First pass: collect document-level paragraph counts for each model/mode combination
+    doc_paragraphs_by_model_mode = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
 
     # ── baselines -------------------------------------------------------
     folder_baselines: DefaultDict[str, List[Dict]] = defaultdict(list)
@@ -156,6 +159,23 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
         for f, bl in folder_baselines.items()
     }
 
+    for doc in docs:
+        folder = doc.get("folder", "unknown")
+        doc_name = doc.get("document", "unknown")
+        doc_para_count = doc.get("paragraph_count", 0)
+        
+        if not doc.get("runs"):
+            continue
+            
+        for dr in doc["runs"]:
+            if "scores_after" not in dr or "group_doc" not in dr["scores_after"]:
+                continue
+            model = dr.get("model", "unknown")
+            mode = dr.get("mode", "unknown")
+            
+            # Track this document for this model/mode combination
+            doc_paragraphs_by_model_mode[folder][model][mode].add((doc_name, doc_para_count))
+
     # ── per-draft collection -------------------------------------------
     for doc, dr in _iter_drafts(docs):
         folder = doc.get("folder", "unknown")
@@ -176,7 +196,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 "doc_mismatch_count": 0,      # NEW: whole‑document structure mismatches
                 "doc_total_drafts": 0,        # NEW: drafts seen – needed for %
                 "para_level_mismatch_count": 0,  # paragraph 1→N mismatches in para mode
-                "total_content_paragraphs": 0,  # NEW: total content paragraphs processed
+                "total_content_paragraphs": 0,  # NEW: total content paragraphs processed (calculated from documents)
                 "para_level_mismatched_paragraphs": 0,  # NEW: count of mismatched paragraphs
                 "zs_hits": {"gptzero": 0, "sapling": 0},
                 # NEW: extended metrics
@@ -303,17 +323,6 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
             # Track individual mismatched paragraphs
             para_level_mismatches = dr.get("para_level_mismatches", 0)
             bucket["para_level_mismatched_paragraphs"] += para_level_mismatches
-            
-            # Track total content paragraphs for percentage calculation
-            # Always track content paragraphs, even for mismatched documents
-            if flag_counts:
-                content_para_count = flag_counts.get("content_paragraph_count", 0)
-            else:
-                # Fallback: estimate content paragraphs from document structure
-                # For para mode, we can get this from paragraph details or use total paragraphs as estimate
-                content_para_count = dr.get("para_count_before", 0)
-            
-            bucket["total_content_paragraphs"] += content_para_count
 
     # ── aggregate bucket data ------------------------------------------
     result: Dict[str, Any] = {}
@@ -359,9 +368,15 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                 avg_citation_preservation = np.mean(data["citation_preservation_rates"]) if data["citation_preservation_rates"] else 100
                 avg_citation_exact_match = np.mean(data["citation_exact_match_rates"]) if data["citation_exact_match_rates"] else 100
                 
-                # Average paragraph counts
+                # Average paragraph counts (from non-mismatched drafts)
                 avg_content_paras = np.mean(data["content_paragraph_counts"]) if data["content_paragraph_counts"] else 0
                 total_content_paras = sum(data["content_paragraph_counts"]) if data["content_paragraph_counts"] else 0
+                
+                # NEW: Calculate total paragraphs from document-level counts (consistent across models)
+                doc_level_total_paras = sum(para_count for _, para_count in doc_paragraphs_by_model_mode[folder][model][mode])
+                
+                # Set the consistent total in the bucket for future use
+                data["total_content_paragraphs"] = doc_level_total_paras
 
                 result[folder][model][mode] = {
                     "baseline": baseline,
@@ -395,7 +410,7 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                     
                     # Paragraph counts
                     "avg_content_paragraphs": avg_content_paras,
-                    "total_content_paragraphs": total_content_paras,
+                    "total_content_paragraphs": doc_level_total_paras,
                     
                     # Existing metrics
                     "draft_count": data["draft_count"],
@@ -410,8 +425,8 @@ def _aggregate_statistics_by_model_mode_folder(docs: List[Dict]) -> Dict[str, An
                         if data["doc_total_drafts"] else 0
                     ),
                     "mismatched_paragraphs_pct": (
-                        data["para_level_mismatched_paragraphs"] / data["total_content_paragraphs"] * 100
-                        if data["total_content_paragraphs"] else 0
+                        data["para_level_mismatched_paragraphs"] / doc_level_total_paras * 100
+                        if doc_level_total_paras else 0
                     ),
                     "zs_hits": data["zs_hits"],
                     "zero_shot_success": {"gptzero": zs_gz_pct, "sapling": zs_sp_pct},
@@ -1793,8 +1808,24 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
     # Document metadata and mismatch summary
     para_total = doc["paragraph_count"]
     baseline_wc = next((r.get('wordcount_before', 0) for r in doc['runs'] if r.get('mode')=='doc'), 0)
-    baseline_gz = next((r['scores_before']['group_doc']['gptzero'] for r in doc['runs'] if 'scores_before' in r), 0)
-    baseline_sp = next((r['scores_before']['group_doc']['sapling'] for r in doc['runs'] if 'scores_before' in r), 0)
+    
+    # Handle None values for disabled detectors
+    baseline_gz = None
+    baseline_sp = None
+    for r in doc['runs']:
+        if 'scores_before' in r and 'group_doc' in r['scores_before']:
+            if baseline_gz is None and r['scores_before']['group_doc']['gptzero'] is not None:
+                baseline_gz = r['scores_before']['group_doc']['gptzero']
+            if baseline_sp is None and r['scores_before']['group_doc']['sapling'] is not None:
+                baseline_sp = r['scores_before']['group_doc']['sapling']
+            if baseline_gz is not None and baseline_sp is not None:
+                break
+    
+    # Set defaults for disabled detectors
+    if baseline_gz is None:
+        baseline_gz = 0.5  # Default for disabled GPTZero
+    if baseline_sp is None:
+        baseline_sp = 0.5  # Default for disabled Sapling
     
     # Count paragraph-level mismatches across all drafts
     total_para_mismatches = 0
@@ -1813,9 +1844,21 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
     with col3:
         st.metric("📊 Word Count", baseline_wc)
     with col4:
-        st.metric("🎯 Baseline GZ", f"{baseline_gz:.3f}")
+        # Check if GPTZero was actually used (not just default)
+        gz_was_used = any(r.get('scores_before', {}).get('group_doc', {}).get('gptzero') is not None 
+                         for r in doc['runs'])
+        if gz_was_used:
+            st.metric("🎯 Baseline GZ", f"{baseline_gz:.3f}")
+        else:
+            st.metric("🎯 Baseline GZ", "N/A", help="GPTZero detector was disabled")
     with col5:
-        st.metric("🎯 Baseline SP", f"{baseline_sp:.3f}")
+        # Check if Sapling was actually used (not just default)
+        sp_was_used = any(r.get('scores_before', {}).get('group_doc', {}).get('sapling') is not None 
+                         for r in doc['runs'])
+        if sp_was_used:
+            st.metric("🎯 Baseline SP", f"{baseline_sp:.3f}")
+        else:
+            st.metric("🎯 Baseline SP", "N/A", help="Sapling detector was disabled")
     
     # Show paragraph mismatch summary if any exist
     if total_para_mismatches > 0:
@@ -1869,11 +1912,11 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
                     "Model": model,
                     "Mode": mode.title(),
                     "Drafts": len(valid_drafts),
-                    "Avg GPTZero": f"{avg_gz:.3f}",
-                    "Δ GZ": avg_gz - baseline_gz,
+                    "Avg GPTZero": f"{avg_gz:.3f}" if avg_gz is not None else "N/A",
+                    "Δ GZ": avg_gz - baseline_gz if avg_gz is not None else 0,
                     "Zero-shot GZ": f"{zero_shot_gz}/{len(valid_drafts)}",
-                    "Avg Sapling": f"{avg_sp:.3f}",
-                    "Δ SP": avg_sp - baseline_sp,
+                    "Avg Sapling": f"{avg_sp:.3f}" if avg_sp is not None else "N/A",
+                    "Δ SP": avg_sp - baseline_sp if avg_sp is not None else 0,
                     "Zero-shot SP": f"{zero_shot_sp}/{len(valid_drafts)}",
                     "Avg WC Δ": f"{avg_wc:+.0f}",
                     "Avg Quality": f"{avg_quality:.1f}%",
@@ -2001,9 +2044,15 @@ def _render_document_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: f
             # Draft-level metrics
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - baseline_gz)
+                if gz_after is not None:
+                    colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - baseline_gz)
+                else:
+                    st.metric("GPTZero", "N/A", help="GPTZero detector was disabled")
             with col2:
-                colored_metric("Sapling", f"{sp_after:.3f}", sp_after - baseline_sp)
+                if sp_after is not None:
+                    colored_metric("Sapling", f"{sp_after:.3f}", sp_after - baseline_sp)
+                else:
+                    st.metric("Sapling", "N/A", help="Sapling detector was disabled")
             with col3:
                 wc_delta = draft.get("wordcount_after", 0) - draft.get("wordcount_before", 0)
                 st.metric("WC Change", f"{wc_delta:+d}")
@@ -2094,9 +2143,15 @@ def _render_paragraph_mode_analysis(by_model: Dict, doc_name: str, baseline_gz: 
             # Draft-level metrics (same layout as document mode)
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - baseline_gz)
+                if gz_after is not None:
+                    colored_metric("GPTZero", f"{gz_after:.3f}", gz_after - baseline_gz)
+                else:
+                    st.metric("GPTZero", "N/A", help="GPTZero detector was disabled")
             with col2:
-                colored_metric("Sapling", f"{sp_after:.3f}", sp_after - baseline_sp)
+                if sp_after is not None:
+                    colored_metric("Sapling", f"{sp_after:.3f}", sp_after - baseline_sp)
+                else:
+                    st.metric("Sapling", "N/A", help="Sapling detector was disabled")
             with col3:
                 wc_delta = draft.get("wordcount_after", 0) - draft.get("wordcount_before", 0)
                 st.metric("WC Change", f"{wc_delta:+d}")
@@ -2319,11 +2374,17 @@ def _render_paragraph_comparison_view(by_model: Dict, doc_name: str, para_total:
     # Quick draft metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        gz_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("gptzero", 0)
-        st.metric("GPTZero", f"{gz_after:.3f}")
+        gz_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("gptzero")
+        if gz_after is not None:
+            st.metric("GPTZero", f"{gz_after:.3f}")
+        else:
+            st.metric("GPTZero", "N/A", help="GPTZero detector was disabled")
     with col2:
-        sp_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("sapling", 0)
-        st.metric("Sapling", f"{sp_after:.3f}")
+        sp_after = selected_draft.get("scores_after", {}).get("group_doc", {}).get("sapling")
+        if sp_after is not None:
+            st.metric("Sapling", f"{sp_after:.3f}")
+        else:
+            st.metric("Sapling", "N/A", help="Sapling detector was disabled")
     with col3:
         wc_delta = selected_draft.get("wordcount_after", 0) - selected_draft.get("wordcount_before", 0)
         st.metric("WC Change", f"{wc_delta:+d}")

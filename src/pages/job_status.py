@@ -52,11 +52,53 @@ def _show_job_card(job: dict, show_details: bool = False):
             st.caption(f"ID: {job_id}")
         
         with col2:
-            # Progress bar for active jobs
+            # Progress bar for active jobs with current document info
             if status in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
                 progress = job['processed_docs'] / job['total_docs'] if job['total_docs'] > 0 else 0
                 st.progress(progress)
-                st.caption(f"{job['processed_docs']}/{job['total_docs']} docs")
+                
+                # Show active documents in compact format
+                try:
+                    active_docs = json.loads(job.get('active_docs', '[]'))
+                except json.JSONDecodeError:
+                    active_docs = []
+                
+                # Fall back to current_doc if active_docs is empty
+                if not active_docs and job.get('current_doc'):
+                    active_docs = [job['current_doc']]
+                
+                if active_docs:
+                    # Show first active document prominently
+                    current_info = active_docs[0]
+                    if ' | ' in current_info:
+                        doc_name, stage = current_info.split(' | ', 1)
+                        # Truncate long document names
+                        display_doc = doc_name if len(doc_name) <= 20 else doc_name[:17] + "..."
+                        st.caption(f"📄 {display_doc}")
+                        
+                        # Stage with emoji (updated for actual pipeline phases)
+                        stage_emoji = {
+                            "Starting": "🚀",
+                            "Phase 1: Generation": "✍️",
+                            "Phase 2: Detector scoring": "🔍", 
+                            "Phase 3: Gemini quality evaluation": "⭐",
+                            "Phase 4: Assembly": "🔧",
+                            "Completed": "✅",
+                            "Failed": "❌",
+                            "Error": "💥"
+                        }.get(stage, "⚙️")
+                        
+                        st.caption(f"{stage_emoji} {stage}")
+                        
+                        # Show count if multiple active documents
+                        if len(active_docs) > 1:
+                            st.caption(f"+ {len(active_docs) - 1} more active")
+                    else:
+                        st.caption(f"📄 {current_info}")
+                        if len(active_docs) > 1:
+                            st.caption(f"+ {len(active_docs) - 1} more active")
+                else:
+                    st.caption(f"{job['processed_docs']}/{job['total_docs']} docs")
             else:
                 st.markdown(f":{color}[{status.title()}]")
         
@@ -107,9 +149,76 @@ def _show_job_card(job: dict, show_details: bool = False):
                 if job['completed_at']:
                     st.write(f"- Completed: {_format_timestamp(job['completed_at'])}")
             
-            # Current status
-            if job['current_doc'] and status == JobStatus.RUNNING.value:
-                st.info(f"Currently processing: **{job['current_doc']}**")
+            # Active documents processing status - shows ALL documents being processed
+            if status == JobStatus.RUNNING.value:
+                try:
+                    active_docs = json.loads(job.get('active_docs', '[]'))
+                except json.JSONDecodeError:
+                    active_docs = []
+                
+                # Also check current_doc for backward compatibility
+                if job.get('current_doc') and not active_docs:
+                    active_docs = [job['current_doc']]
+                
+                if active_docs:
+                    st.markdown(f"### 🔄 **Currently Processing ({len(active_docs)} documents)**")
+                    
+                    # Stage-specific emoji and styling (updated for actual pipeline phases)
+                    stage_config = {
+                        "Starting": ("🚀", "blue"),
+                        "Phase 1: Generation": ("✍️", "orange"),
+                        "Phase 2: Detector scoring": ("🔍", "blue"),
+                        "Phase 3: Gemini quality evaluation": ("⭐", "purple"),
+                        "Phase 4: Assembly": ("🔧", "green"),
+                        "Completed": ("✅", "green"),
+                        "Failed": ("❌", "red"),
+                        "Skipped": ("⏭️", "gray"),
+                        "Error": ("💥", "red")
+                    }
+                    
+                    # Display each active document
+                    for doc_info in active_docs[:5]:  # Show max 5 to avoid clutter
+                        if ' | ' in doc_info:
+                            doc_name, stage = doc_info.split(' | ', 1)
+                            emoji, color = stage_config.get(stage, ("⚙️", "blue"))
+                            
+                            col1, col2 = st.columns([2, 1])
+                            with col1:
+                                st.markdown(f"📄 **{doc_name}**")
+                            with col2:
+                                st.markdown(f"{emoji} :{color}[{stage}]")
+                        else:
+                            st.markdown(f"📄 **{doc_info}**")
+                    
+                    # Show count if more documents than displayed
+                    if len(active_docs) > 5:
+                        st.caption(f"... and {len(active_docs) - 5} more documents")
+                
+                elif job.get('current_doc'):
+                    # Fallback for old format
+                    current_info = job['current_doc']
+                    if ' | ' in current_info:
+                        doc_name, stage = current_info.split(' | ', 1)
+                        st.markdown(f"### 🔄 **Currently Processing**")
+                        col1, col2 = st.columns([1, 1])
+                        with col1:
+                            st.markdown(f"**📄 Document:** `{doc_name}`")
+                        with col2:
+                            stage_config = {
+                                "Starting": ("🚀", "blue"),
+                                "Phase 1: Generation": ("✍️", "orange"),
+                                "Phase 2: Detector scoring": ("🔍", "blue"),
+                                "Phase 3: Gemini quality evaluation": ("⭐", "purple"),
+                                "Phase 4: Assembly": ("🔧", "green"),
+                                "Completed": ("✅", "green"),
+                                "Failed": ("❌", "red"),
+                                "Skipped": ("⏭️", "gray"),
+                                "Error": ("💥", "red")
+                            }
+                            emoji, color = stage_config.get(stage, ("⚙️", "blue"))
+                            st.markdown(f"**{emoji} Stage:** :{color}[{stage}]")
+                    else:
+                        st.info(f"Currently processing: **{current_info}**")
             
             # Error display
             if job['error']:

@@ -92,7 +92,17 @@ def _maybe_log(message: str, cb: Callable[[str], None] | None = None):
 
 def _stage(message: str, cb: Callable[[str], None] | None = None):
     """Stage boundary logging: prefixes with ▶️ and logs."""
-    _maybe_log(f"▶️  {message}", cb)
+    formatted_message = f"▶️  {message}"
+    _maybe_log(formatted_message, cb)
+    
+    # If the callback supports stage tracking, call it with stage info
+    if hasattr(cb, '__call__') and cb.__code__.co_argcount > 1:
+        try:
+            # Try to call with stage parameter for enhanced tracking
+            cb(formatted_message, message)
+        except TypeError:
+            # Fallback to single parameter call
+            cb(formatted_message)
 
 # Global pool for Gemini calls (caps parallelism)
 _GEMINI_POOL = ThreadPoolExecutor(max_workers=GEMINI_MAX_WORKERS)

@@ -26,6 +26,13 @@ from .paths import RESULTS
 from .config import MAX_PARALLEL_DOCS, LOG_HISTORY_LIMIT
 from .pipeline import run_test
 from .results_db import save_run
+from .temp_results_db import (
+    create_temp_run, save_temp_document_result, cleanup_temp_run,
+    get_temp_run_progress, get_temp_run_results, recover_from_temp_run,
+    list_temp_runs
+)
+
+logger = logging.getLogger(__name__)
 
 # Job status enum
 class JobStatus(Enum):
@@ -73,6 +80,7 @@ def init_db():
                     total_docs INTEGER NOT NULL,
                     processed_docs INTEGER DEFAULT 0,
                     current_doc TEXT,
+                    active_docs TEXT,
                     folders TEXT NOT NULL,
                     models TEXT NOT NULL,
                     iterations INTEGER NOT NULL,
@@ -86,6 +94,10 @@ def init_db():
         elif 'include_doc_mode' not in columns:
             # Add column to existing table
             conn.execute("ALTER TABLE jobs ADD COLUMN include_doc_mode INTEGER DEFAULT 1")
+        
+        # Add active_docs column if it doesn't exist
+        if 'active_docs' not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN active_docs TEXT DEFAULT '[]'")
         
         # Create index for faster queries
         conn.execute("""
@@ -130,9 +142,12 @@ def update_job_status(
     job_id: str,
     status: JobStatus,
     current_doc: Optional[str] = None,
+    current_stage: Optional[str] = None,
     processed_docs: Optional[int] = None,
     error: Optional[str] = None,
-    log_entry: Optional[str] = None
+    log_entry: Optional[str] = None,
+    add_active_doc: Optional[str] = None,
+    remove_active_doc: Optional[str] = None
 ):
     """Update job status and optionally add a log entry."""
     with _get_conn() as conn:
@@ -164,8 +179,44 @@ def update_job_status(
             params.append(time.time())
         
         if current_doc is not None:
+            # Combine document and stage info for current_doc field
+            if current_stage:
+                combined_status = f"{current_doc} | {current_stage}"
+            else:
+                combined_status = current_doc
             updates.append("current_doc = ?")
-            params.append(current_doc)
+            params.append(combined_status)
+        
+        # Handle active documents list
+        if add_active_doc is not None or remove_active_doc is not None:
+            # Get current active docs
+            cursor = conn.execute("SELECT active_docs FROM jobs WHERE job_id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    active_docs = json.loads(row["active_docs"] or "[]")
+                except json.JSONDecodeError:
+                    active_docs = []
+                
+                logger.info(f"📋 Current active docs before update: {active_docs}")
+                
+                # Add document to active list
+                if add_active_doc:
+                    doc_stage = f"{add_active_doc} | {current_stage}" if current_stage else add_active_doc
+                    # Remove any existing entry for this document first
+                    active_docs = [doc for doc in active_docs if not doc.startswith(f"{add_active_doc} |")]
+                    active_docs.append(doc_stage)
+                    logger.info(f"➕ Added '{doc_stage}' to active docs")
+                
+                # Remove document from active list
+                if remove_active_doc:
+                    original_count = len(active_docs)
+                    active_docs = [doc for doc in active_docs if not doc.startswith(f"{remove_active_doc} |")]
+                    logger.info(f"➖ Removed docs starting with '{remove_active_doc}' (removed {original_count - len(active_docs)} entries)")
+                
+                logger.info(f"📋 New active docs after update: {active_docs}")
+                updates.append("active_docs = ?")
+                params.append(json.dumps(active_docs))
         
         if processed_docs is not None:
             updates.append("processed_docs = ?")
@@ -264,9 +315,30 @@ def _should_cancel(job_id: str) -> bool:
     job = get_job(job_id)
     return job and job["status"] == JobStatus.CANCELLED.value
 
-def _job_logger(job_id: str, message: str):
-    """Logger function that saves to job logs."""
-    update_job_status(job_id, JobStatus.RUNNING, log_entry=message)
+def _job_logger(job_id: str, message: str, current_doc: str = None, current_stage: str = None):
+    """Logger function that saves to job logs and optionally updates current processing status."""
+    # Determine if we should add or remove from active docs based on stage
+    add_active = None
+    remove_active = None
+    
+    if current_doc and current_stage:
+        # Match the ACTUAL pipeline phase messages
+        if current_stage in ["Phase 1: Generation", "Phase 2: Detector scoring", "Phase 3: Gemini quality evaluation", "Phase 4: Assembly"]:
+            add_active = current_doc
+            logger.info(f"🔄 Adding document '{current_doc}' to active list for stage '{current_stage}'")
+        elif current_stage in ["Completed", "Failed", "Skipped", "Error"]:
+            remove_active = current_doc
+            logger.info(f"✅ Removing document '{current_doc}' from active list (stage: '{current_stage}')")
+    
+    update_job_status(
+        job_id, 
+        JobStatus.RUNNING, 
+        current_doc=current_doc,
+        current_stage=current_stage,
+        log_entry=message,
+        add_active_doc=add_active,
+        remove_active_doc=remove_active
+    )
 
 def _run_benchmark_job(
     job_id: str,
@@ -286,18 +358,55 @@ def _run_benchmark_job(
         doc_mode_str = "doc + para modes" if include_doc_mode else "para mode only"
         update_job_status(job_id, JobStatus.RUNNING, log_entry=f"Starting benchmark: {run_name} ({doc_mode_str})")
         
+        # Create temporary run record for data persistence
+        try:
+            create_temp_run(
+                job_id=job_id,
+                run_name=run_name,
+                folders=folders,
+                models=models,
+                iterations=iterations,
+                total_docs=len(docs),
+                include_doc_mode=include_doc_mode,
+                use_gptzero=use_gptzero,
+                use_sapling=use_sapling
+            )
+            update_job_status(job_id, JobStatus.RUNNING, log_entry="✓ Created temporary database for data persistence")
+        except Exception as temp_db_error:
+            # Don't fail the job if temp DB creation fails, just log it
+            update_job_status(job_id, JobStatus.RUNNING, log_entry=f"⚠️ Failed to create temporary database: {temp_db_error}")
+        
         results = []
         processed_counter = 0
 
         def _process_single(doc_path: Path):
             """Wrapper so we can push work into the pool."""
             try:
-                _job_logger(job_id, f"▶️ queued {doc_path.name}")
+                # Update status to show which document is starting
+                _job_logger(job_id, f"▶️ Starting {doc_path.name}", 
+                           current_doc=doc_path.name, current_stage="Starting")
+
+                # Create a stage-tracking logger for this document
+                def stage_logger(message: str, stage: str = None):
+                    # Parse stage from message if not explicitly provided
+                    if not stage:
+                        if "Phase 1: Generation" in message or "humanization" in message.lower():
+                            stage = "Stage 1: Humanization"
+                        elif "Phase 2: Detector scoring" in message or "detector" in message.lower():
+                            stage = "Stage 2: Detector Scoring"
+                        elif "Phase 3: Gemini quality" in message or "quality" in message.lower():
+                            stage = "Stage 3: Quality Evaluation"
+                        elif "Phase 4: Assembly" in message or "assembly" in message.lower():
+                            stage = "Stage 4: Assembly"
+                        else:
+                            stage = "Processing"
+                    
+                    _job_logger(job_id, message, current_doc=doc_path.name, current_stage=stage)
 
                 res = run_test(
                     doc_path,
                     models,
-                    lambda m: _job_logger(job_id, m),
+                    stage_logger,  # Use our enhanced stage logger
                     iterations,
                     include_doc_mode=include_doc_mode,  # Pass the humanization mode parameter
                     use_gptzero=use_gptzero,           # Pass detector selection
@@ -305,6 +414,9 @@ def _run_benchmark_job(
                 )
                 return doc_path, res, None
             except Exception as exc:
+                # Log error with document context
+                _job_logger(job_id, f"❌ Error in {doc_path.name}: {str(exc)}", 
+                           current_doc=doc_path.name, current_stage="Error")
                 return doc_path, None, str(exc)
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_DOCS,
@@ -326,6 +438,8 @@ def _run_benchmark_job(
                 if err:
                     update_job_status(
                         job_id, JobStatus.RUNNING,
+                        current_doc=doc_path.name,
+                        current_stage="Failed",
                         processed_docs=processed_counter,
                         log_entry=f"❌ Error {doc_path.name}: {err}"
                     )
@@ -333,14 +447,41 @@ def _run_benchmark_job(
 
                 if res.get("runs"):
                     results.append(res)
-                    update_job_status(
-                        job_id, JobStatus.RUNNING,
-                        processed_docs=processed_counter,
-                        log_entry=f"✅ Completed {doc_path.name} – {len(res['runs'])} drafts"
-                    )
+                    
+                    # Save to temporary database immediately after processing each document
+                    try:
+                        save_temp_document_result(
+                            job_id=job_id,
+                            run_name=run_name,
+                            folders=folders,
+                            models=models,
+                            iterations=iterations,
+                            document_result=res,
+                            include_doc_mode=include_doc_mode,
+                            use_gptzero=use_gptzero,
+                            use_sapling=use_sapling
+                        )
+                        update_job_status(
+                            job_id, JobStatus.RUNNING,
+                            current_doc=doc_path.name,
+                            current_stage="Completed",
+                            processed_docs=processed_counter,
+                            log_entry=f"✅ Completed {doc_path.name} – {len(res['runs'])} drafts (saved to temp DB)"
+                        )
+                    except Exception as temp_save_error:
+                        # Don't fail the job if temp save fails, just log it
+                        update_job_status(
+                            job_id, JobStatus.RUNNING,
+                            current_doc=doc_path.name,
+                            current_stage="Completed (DB Error)",
+                            processed_docs=processed_counter,
+                            log_entry=f"✅ Completed {doc_path.name} – {len(res['runs'])} drafts (⚠️ temp save failed: {temp_save_error})"
+                        )
                 else:
                     update_job_status(
                         job_id, JobStatus.RUNNING,
+                        current_doc=doc_path.name,
+                        current_stage="Skipped",
                         processed_docs=processed_counter,
                         log_entry=f"⚠️ Skipped {doc_path.name} (no paragraphs)"
                     )
@@ -370,6 +511,12 @@ def _run_benchmark_job(
                     processed_docs=len(docs),
                     log_entry=f"✅ Benchmark completed successfully - {len(results)} documents processed"
                 )
+                
+                # Clean up temporary database data after successful completion
+                try:
+                    cleanup_temp_run(job_id)
+                except Exception as cleanup_error:
+                    logging.warning(f"Failed to cleanup temporary data for job '{job_id}': {cleanup_error}")
             except Exception as db_error:
                 # Log the database error but don't fail the job
                 logging.error(f"Failed to save run to persistent database: {db_error}")
@@ -379,6 +526,12 @@ def _run_benchmark_job(
                     processed_docs=len(docs),
                     log_entry=f"✅ Benchmark completed successfully - {len(results)} documents processed (Warning: Could not save to persistent database)"
                 )
+                
+                # Clean up temporary database data after successful completion
+                try:
+                    cleanup_temp_run(job_id)
+                except Exception as cleanup_error:
+                    logging.warning(f"Failed to cleanup temporary data for job '{job_id}': {cleanup_error}")
         else:
             update_job_status(
                 job_id,
@@ -450,3 +603,65 @@ def cleanup_old_jobs(days: int = 7):
             AND status IN (?, ?, ?)
         """, (cutoff, JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value))
         conn.commit()
+    
+    # Also clean up old temporary database entries
+    try:
+        from .temp_results_db import cleanup_old_temp_runs
+        cleanup_old_temp_runs(days)
+    except Exception as e:
+        logging.warning(f"Failed to cleanup old temporary runs: {e}")
+
+# ═══════════════ RECOVERY FUNCTIONS ════════════════════════════════
+
+def get_recoverable_jobs() -> List[Dict[str, Any]]:
+    """Get jobs that can be recovered from temporary database."""
+    try:
+        temp_runs = list_temp_runs()
+        recoverable = []
+        
+        for temp_run in temp_runs:
+            # Check if this job still exists in the main jobs table
+            job = get_job(temp_run["job_id"])
+            if job and job["status"] in (JobStatus.FAILED.value, JobStatus.CANCELLED.value):
+                # Job failed but has temporary data
+                temp_run["job_status"] = job["status"]
+                temp_run["can_recover"] = True
+                recoverable.append(temp_run)
+            elif not job:
+                # Job doesn't exist in main table but has temp data
+                temp_run["job_status"] = "unknown"
+                temp_run["can_recover"] = True
+                recoverable.append(temp_run)
+        
+        return recoverable
+        
+    except Exception as e:
+        logging.error(f"Failed to get recoverable jobs: {e}")
+        return []
+
+def recover_job_from_temp(job_id: str) -> bool:
+    """
+    Recover a failed job from temporary database.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        run_name = recover_from_temp_run(job_id)
+        if run_name:
+            # Update job status to completed if it exists
+            job = get_job(job_id)
+            if job:
+                update_job_status(
+                    job_id,
+                    JobStatus.COMPLETED,
+                    log_entry=f"✅ Successfully recovered from temporary database: {run_name}"
+                )
+            
+            # Clean up temporary data after successful recovery
+            cleanup_temp_run(job_id)
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logging.error(f"Failed to recover job '{job_id}' from temporary database: {e}")
+        return False
