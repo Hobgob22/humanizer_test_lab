@@ -20,7 +20,7 @@ class APIClient:
         }
         # Persistent client with connection pooling
         self._client = httpx.Client(
-            timeout=10.0,  # Reduced from 30s for faster failures
+            timeout=60.0,  # Increased for large run data loading
             limits=httpx.Limits(
                 max_keepalive_connections=20,
                 max_connections=50,
@@ -96,7 +96,26 @@ class APIClient:
     
     def get_run(self, run_name: str) -> Dict:
         """Get a specific run."""
-        return self._request("GET", f"/api/runs/{run_name}")
+        # Use longer timeout for large runs
+        url = f"{self.base_url}/api/runs/{run_name}"
+        try:
+            response = self._client.request(
+                "GET",
+                url,
+                headers=self.headers,
+                timeout=120.0  # 2 minutes for very large runs
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_detail = e.response.json().get("detail", str(e))
+            except:
+                error_detail = str(e)
+            raise Exception(f"API error: {error_detail}")
+        except Exception as e:
+            raise Exception(f"API request failed: {str(e)}")
     
     def get_run_summary(self, run_name: str) -> Dict:
         """Get run summary without full document data."""
