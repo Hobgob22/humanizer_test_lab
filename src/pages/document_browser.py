@@ -1,6 +1,7 @@
 # src/pages/document_browser.py  – fixed: no nested expanders, JSON views now in tabs
 from __future__ import annotations
 
+import sys
 import concurrent.futures
 from pathlib import Path
 from typing import Dict, List
@@ -11,6 +12,10 @@ import streamlit as st
 import math  # ← pagination helper
 import time # Added for retry logic
 
+# ─────────────────── project root ────────────────────
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.pages.utils import (
     ZERO_SHOT_THRESHOLD,
@@ -20,14 +25,13 @@ from src.pages.utils import (
 from src.pipeline import load_ai_scores
 from src.results_db import list_runs, load_run
 
-# ─────────────────── project root ────────────────────
-ROOT = Path(__file__).resolve().parents[2]
-
 
 @st.cache_data(ttl=3600, show_spinner="Loading AI detection scores...")
 def _cached_load_ai_scores(doc_path: str) -> Dict:
     """Cached version of load_ai_scores to prevent repeated API calls."""
     return load_ai_scores(Path(doc_path))
+
+
 
 
 # ═════════════════════ DOCUMENTS BROWSER PAGE ═════════════════════════
@@ -329,3 +333,19 @@ def _render_mode_block(
         colored_metric("Avg GPTZero", f"{avg_gz:.3f}", avg_gz - baseline["gptzero"])
         colored_metric("Avg Sapling", f"{avg_sp:.3f}", avg_sp - baseline["sapling"])
         st.metric("Zero-shot success", f"GZ {zs_gz}/{len(drafts)} | SP {zs_sp}/{len(drafts)}")
+
+
+# ──────────────────────────── Standalone Page Setup ────────────────────
+# When this file is executed directly by Streamlit's multi-page system,
+# set up the page config and sidebar, then call the page function
+# Check if we're being run as a standalone page (not imported)
+if __name__ == "__main__":
+    # Page config
+    st.set_page_config(page_title="Document Browser - Humanizer Test-Bench", layout="wide", initial_sidebar_state="expanded")
+    
+    # Setup shared sidebar
+    from src.pages._shared_layout import setup_sidebar
+    setup_sidebar()
+    
+    # Call the page function
+    page_browser()

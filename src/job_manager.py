@@ -62,13 +62,14 @@ def _get_conn():
 
 def init_db():
     """Initialize the jobs database."""
+    print(f"[JOB_MANAGER] init_db() called, JOB_DB_PATH: {JOB_DB_PATH}", flush=True)
     with _get_conn() as conn:
-        # Check if include_doc_mode column exists
-        cursor = conn.execute("PRAGMA table_info(jobs)")
-        columns = [row[1] for row in cursor.fetchall()]
+        # Check if table exists
+        table_exists = any(row[0] == 'jobs' for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
         
-        if 'jobs' not in [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]:
-            # Create new table with include_doc_mode
+        if not table_exists:
+            print("[JOB_MANAGER] Table 'jobs' does not exist, creating...", flush=True)
+            # Create new table with all columns
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     job_id TEXT PRIMARY KEY,
@@ -80,31 +81,60 @@ def init_db():
                     total_docs INTEGER NOT NULL,
                     processed_docs INTEGER DEFAULT 0,
                     current_doc TEXT,
-                    active_docs TEXT,
+                    active_docs TEXT DEFAULT '[]',
                     folders TEXT NOT NULL,
                     models TEXT NOT NULL,
                     iterations INTEGER NOT NULL,
                     doc_counts TEXT NOT NULL,
                     include_doc_mode INTEGER DEFAULT 1,
+                    use_gptzero INTEGER DEFAULT 1,
+                    use_sapling INTEGER DEFAULT 1,
                     error TEXT,
                     results TEXT,
                     logs TEXT
                 )
             """)
-        elif 'include_doc_mode' not in columns:
-            # Add column to existing table
-            conn.execute("ALTER TABLE jobs ADD COLUMN include_doc_mode INTEGER DEFAULT 1")
+            print("[JOB_MANAGER] [OK] Table 'jobs' created successfully", flush=True)
+        else:
+            print("[JOB_MANAGER] Table 'jobs' exists, checking for missing columns...", flush=True)
+            # Check existing columns and add missing ones
+            cursor = conn.execute("PRAGMA table_info(jobs)")
+            existing_columns = [row[1] for row in cursor.fetchall()]
+            print(f"[JOB_MANAGER] Existing columns: {existing_columns}", flush=True)
+            
+            # Add missing columns to existing table
+            if 'include_doc_mode' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN include_doc_mode INTEGER DEFAULT 1")
+                print("[JOB_MANAGER] Added column: include_doc_mode", flush=True)
+            
+            if 'use_gptzero' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN use_gptzero INTEGER DEFAULT 1")
+                print("[JOB_MANAGER] Added column: use_gptzero", flush=True)
+            
+            if 'use_sapling' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN use_sapling INTEGER DEFAULT 1")
+                print("[JOB_MANAGER] Added column: use_sapling", flush=True)
+            
+            # Add active_docs column if it doesn't exist
+            if 'active_docs' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN active_docs TEXT DEFAULT '[]'")
+                print("[JOB_MANAGER] Added column: active_docs", flush=True)
         
-        # Add active_docs column if it doesn't exist
-        if 'active_docs' not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN active_docs TEXT DEFAULT '[]'")
-        
-        # Create index for faster queries
+        # Create indexes for faster queries
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_jobs_status 
             ON jobs(status, created_at DESC)
         """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_status_created 
+            ON jobs(status, created_at DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_created 
+            ON jobs(created_at DESC)
+        """)
         conn.commit()
+        print("[JOB_MANAGER] [OK] init_db() completed successfully", flush=True)
 
 # Initialize on import
 init_db()
@@ -121,20 +151,51 @@ def create_job(
     use_sapling: bool = True
 ) -> str:
     """Create a new job and return its ID."""
-    job_id = f"{run_name}_{int(time.time())}"
+    import random
     
-    with _get_conn() as conn:
-        conn.execute("""
-            INSERT INTO jobs (
-                job_id, run_name, status, created_at, total_docs,
-                folders, models, iterations, doc_counts, include_doc_mode, logs
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            job_id, run_name, JobStatus.PENDING.value, time.time(), total_docs,
-            json.dumps(folders), json.dumps(models), iterations,
-            json.dumps(doc_counts), int(include_doc_mode), json.dumps([])
-        ))
-        conn.commit()
+    # Generate unique job_id with timestamp and random component
+    # Use microseconds for better uniqueness
+    timestamp = time.time()
+    random_suffix = random.randint(1000, 9999)
+    job_id = f"{run_name}_{int(timestamp * 1000)}_{random_suffix}"
+    
+    # Retry if job_id already exists (unlikely but possible)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            with _get_conn() as conn:
+                # Check if job_id already exists
+                existing = conn.execute(
+                    "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                
+                if existing:
+                    # Regenerate with new random suffix
+                    random_suffix = random.randint(1000, 9999)
+                    job_id = f"{run_name}_{int(timestamp * 1000)}_{random_suffix}"
+                    continue
+                
+                conn.execute("""
+                    INSERT INTO jobs (
+                        job_id, run_name, status, created_at, total_docs,
+                        folders, models, iterations, doc_counts, include_doc_mode, use_gptzero, use_sapling, logs
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    job_id, run_name, JobStatus.PENDING.value, timestamp, total_docs,
+                    json.dumps(folders), json.dumps(models), iterations,
+                    json.dumps(doc_counts), int(include_doc_mode), int(use_gptzero), int(use_sapling), json.dumps([])
+                ))
+                conn.commit()
+            
+            return job_id
+        except sqlite3.IntegrityError:
+            # UNIQUE constraint violation - regenerate and retry
+            if attempt < max_retries - 1:
+                random_suffix = random.randint(1000, 9999)
+                job_id = f"{run_name}_{int(timestamp * 1000)}_{random_suffix}"
+                continue
+            else:
+                raise Exception(f"Failed to create unique job_id after {max_retries} attempts")
     
     return job_id
 
@@ -353,10 +414,16 @@ def _run_benchmark_job(
     use_sapling: bool = True
 ):
     """Background worker function for running benchmarks."""
+    print(f"[BACKGROUND] [START] Starting background benchmark job: {job_id}", flush=True)
+    print(f"[BACKGROUND] Run name: {run_name}", flush=True)
+    print(f"[BACKGROUND] Docs: {len(docs)}, Models: {models}, Iterations: {iterations}", flush=True)
+    
     try:
         # Update status to running
         doc_mode_str = "doc + para modes" if include_doc_mode else "para mode only"
+        print(f"[BACKGROUND] Modes: {doc_mode_str}", flush=True)
         update_job_status(job_id, JobStatus.RUNNING, log_entry=f"Starting benchmark: {run_name} ({doc_mode_str})")
+        print(f"[BACKGROUND] [OK] Updated job {job_id} status to RUNNING", flush=True)
         
         # Create temporary run record for data persistence
         try:
@@ -565,6 +632,8 @@ def start_benchmark_job(
     use_sapling: bool = True
 ) -> str:
     """Start a benchmark job in the background and return the job ID."""
+    print(f"[JOB_MANAGER] [CREATE] Creating job record for: {run_name}", flush=True)
+    
     # Create job record
     job_id = create_job(
         run_name=run_name,
@@ -578,6 +647,9 @@ def start_benchmark_job(
         use_sapling=use_sapling
     )
     
+    print(f"[JOB_MANAGER] [OK] Created job record: {job_id}", flush=True)
+    print(f"[JOB_MANAGER] [THREAD] Starting background thread...", flush=True)
+    
     # Start background thread
     thread = threading.Thread(
         target=_run_benchmark_job,
@@ -588,7 +660,11 @@ def start_benchmark_job(
     
     with _job_lock:
         _job_threads[job_id] = thread
+        print(f"[JOB_MANAGER] [OK] Registered thread for job {job_id}", flush=True)
         thread.start()
+        print(f"[JOB_MANAGER] [OK] Thread started successfully for job {job_id}", flush=True)
+    
+    print(f"[JOB_MANAGER] [SUCCESS] Job {job_id} fully initialized and running", flush=True)
     
     return job_id
 
@@ -653,7 +729,7 @@ def recover_job_from_temp(job_id: str) -> bool:
                 update_job_status(
                     job_id,
                     JobStatus.COMPLETED,
-                    log_entry=f"✅ Successfully recovered from temporary database: {run_name}"
+                    log_entry=f"[OK] Successfully recovered from temporary database: {run_name}"
                 )
             
             # Clean up temporary data after successful recovery

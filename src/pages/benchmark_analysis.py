@@ -12,6 +12,8 @@ from __future__ import annotations
 #  • Merge multiple runs into a single view
 ###############################################################################
 
+import sys
+import json
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -22,6 +24,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# ─────────────────── project root ────────────────────
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from src.config import ZERO_SHOT_THRESHOLD
 from src.pages.utils import (
     GEMINI_FLAGS,
@@ -31,10 +38,8 @@ from src.pages.utils import (
     render_draft,
     safe_hist,
 )
-from src.results_db import delete_run, list_runs, load_run
-
-# ────────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parents[2]
+from src.api_client import get_client, cached_list_runs, cached_get_run
+from src.results_db import delete_run  # Keep for deletion
 
 # ────────────────────────── helpers ─────────────────────────────────────
 _EXPECTED_FLAGS = (
@@ -65,7 +70,12 @@ def _merge_runs_data(run_ids: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
     doc_by_name = defaultdict(lambda: {"runs": []})  # Group by document name
     
     for run_id in run_ids:
-        run_data = load_run(run_id)
+        try:
+            run_data = cached_get_run(run_id)
+        except Exception as e:
+            st.warning(f"Could not load run {run_id}: {e}")
+            continue
+            
         if not run_data:
             continue
             
@@ -906,9 +916,42 @@ def _create_model_comparison_table(stats: Dict[str, Any], folder: str) -> pd.Dat
     return df[available_cols]
 
 # ═══════════════ RUN OVERVIEW & DOC PAGE (main) ═══════════════════════
+
 def page_runs() -> None:
-    # Get all available runs
-    runs_meta = list_runs()
+    # Get all available runs via API
+    try:
+        runs_response = cached_list_runs(limit=100, offset=0)
+        runs_meta = []
+        for r in runs_response.get("runs", []):
+            # Parse folders and models from JSON strings (API returns them as strings)
+            try:
+                folders_str = r.get("folders", "")
+                models_str = r.get("models", "")
+                
+                if isinstance(folders_str, str) and folders_str:
+                    folders = json.loads(folders_str) if folders_str.startswith("[") else folders_str.split(",")
+                else:
+                    folders = folders_str if isinstance(folders_str, list) else []
+                
+                if isinstance(models_str, str) and models_str:
+                    models = json.loads(models_str) if models_str.startswith("[") else models_str.split(",")
+                else:
+                    models = models_str if isinstance(models_str, list) else []
+            except Exception as parse_err:
+                # Fallback to string values
+                folders = r.get("folders", "")
+                models = r.get("models", "")
+            
+            runs_meta.append({
+                "name": r["name"],
+                "ts": r["timestamp"],
+                "folders": folders,
+                "models": models
+            })
+    except Exception as e:
+        st.warning(f"Could not load runs: {e}")
+        runs_meta = []
+    
     if not runs_meta:
         st.info("No benchmarks stored yet. Create a new run to get started!")
         return
@@ -1024,10 +1067,49 @@ def _page_single_run(runs_meta: List[Dict]) -> None:
         for r in runs_meta
     ]
     default_idx = next((i for i, r in enumerate(runs_meta) if r["name"] == run_id), 0)
-    selected = st.selectbox("Select benchmark run", run_labels, index=default_idx)
-    run_id = runs_meta[run_labels.index(selected)]["name"]
+    
+    # Run selector and delete button at the top
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        selected = st.selectbox("Select benchmark run", run_labels, index=default_idx)
+    with col2:
+        run_id = runs_meta[run_labels.index(selected)]["name"]
+        delete_key = f"delete_run_{run_id}"
+        if st.button("🗑️ Delete Run", type="secondary", key=delete_key):
+            # Use session state for confirmation instead of checkbox
+            if f"{delete_key}_confirmed" not in st.session_state:
+                st.session_state[f"{delete_key}_confirmed"] = False
+            
+            if not st.session_state[f"{delete_key}_confirmed"]:
+                st.session_state[f"{delete_key}_confirmed"] = True
+                st.warning("⚠️ Click delete again to confirm")
+            else:
+                # Delete via API
+                try:
+                    get_client().delete_run(run_id)
+                    st.success("✅ Run deleted successfully!")
+                    # Clear session state
+                    st.session_state[f"{delete_key}_confirmed"] = False
+                    # Update query params without reload
+                    qp_set(run=None, view=None, doc=None)
+                    # Clear cache
+                    if f"analysis_stats_{run_id}" in st.session_state:
+                        del st.session_state[f"analysis_stats_{run_id}"]
+                    if f"analysis_docs_{run_id}" in st.session_state:
+                        del st.session_state[f"analysis_docs_{run_id}"]
+                    # Refresh runs list
+                    st.cache_data.clear()
+                    # Don't sleep - just rerun immediately
+                    st.rerun()  # Only rerun after delete to refresh list
+                except Exception as e:
+                    st.error(f"Failed to delete run: {e}")
+                    st.session_state[f"{delete_key}_confirmed"] = False
 
-    run = load_run(run_id) or {}
+    try:
+        run = cached_get_run(run_id) or {}
+    except Exception as e:
+        st.warning(f"Could not load run {run_id}: {e}")
+        run = {}
     docs: List[Dict] = run.get("docs", [])
     if not docs:
         st.warning("Selected run is empty.")
@@ -1040,17 +1122,6 @@ def _page_single_run(runs_meta: List[Dict]) -> None:
 
     # Display analysis for single run
     _display_analysis(docs, run_id, is_merged=False)
-    
-    # Run management (only for single runs)
-    st.divider()
-    col1, col2 = st.columns([6, 1])
-    with col2:
-        if st.button("🗑️ Delete Run", type="secondary"):
-            if st.checkbox("Confirm deletion"):
-                delete_run(run_id)
-                st.warning("Run deleted!")
-                qp_set(run=None, view=None, doc=None)
-                st.rerun()
 
 
 def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) -> None:
@@ -1085,9 +1156,14 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             "They are excluded from statistics but listed in the Documents tab."
         )
 
-    # ── calculate analytics once ---------------------------------------------
-    detailed_stats = _aggregate_statistics_by_model_mode_folder(docs)
-
+    # ── Lazy load statistics - only calculate when needed --------
+    # Store docs in session state for lazy loading
+    cache_key = f"analysis_docs_{run_name}"
+    st.session_state[cache_key] = docs
+    
+    # Store statistics computation state
+    stats_cache_key = f"analysis_stats_{run_name}"
+    
     # --- main tabs ------------------------------------------------------------
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
@@ -1099,11 +1175,21 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             "📄 Documents",
         ]
     )
+    
+    # Helper function to get or compute stats lazily
+    def get_stats():
+        """Lazy load statistics - only compute when accessed."""
+        if stats_cache_key not in st.session_state:
+            with st.spinner("Computing statistics..."):
+                st.session_state[stats_cache_key] = _aggregate_statistics_by_model_mode_folder(docs)
+        return st.session_state[stats_cache_key]
 
     # ════════════════════════════════════════════════════════════════════════
     # Tab 1 – Detailed per-folder / model table + charts (+NEW wc histogram)
     # ════════════════════════════════════════════════════════════════════════
     with tab1:
+        # Lazy load stats only when this tab is accessed
+        detailed_stats = get_stats()
         st.subheader("🎯 Detailed Statistics by Folder, Model, and Mode")
 
         with st.expander("ℹ️ Understanding the metrics", expanded=False):
@@ -1349,6 +1435,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
 
 
     with tab2:
+        # Lazy load stats only when this tab is accessed
+        detailed_stats = get_stats()
         st.subheader("📈 Model Performance")
         with st.expander("ℹ️ About this view", expanded=False):
             st.markdown(
@@ -1382,6 +1470,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
 
     
     with tab3:
+        # Lazy load stats only when this tab is accessed
+        detailed_stats = get_stats()
         st.subheader("📐 Extended Statistics")
         st.caption("Min, 25-percentile, median, mean, 75-percentile and max for each metric.")
         ext_df = _build_extended_stats(detailed_stats)
@@ -1391,6 +1481,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             st.dataframe(ext_df, use_container_width=True, hide_index=True)
 
     with tab4:
+        # Lazy load stats only when this tab is accessed
+        detailed_stats = get_stats()
         st.subheader("📁 Performance Summary by Folder")        
         with st.expander("ℹ️ About folder types", expanded=False):
             st.markdown("""
@@ -1582,6 +1674,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
             st.pyplot(fig)
     
     with tab5:
+        # Lazy load stats only when this tab is accessed
+        detailed_stats = get_stats()
         st.subheader("📊 Score & Word-count Distributions")
 
         with st.expander("ℹ️ How to read these charts", expanded=False):
@@ -1772,6 +1866,8 @@ def _display_analysis(docs: List[Dict], run_name: str, is_merged: bool = False) 
                             if show_view_buttons and doc.get("runs"):
                                 if st.button("View", key=f"view_{folder}_{i}"):
                                     qp_set(run=run_name, view="doc", doc=doc["document"])
+                                    # Use session state to trigger navigation without full reload
+                                    st.session_state["nav_to_doc"] = True
                                     st.rerun()
                             elif doc.get("runs"):
                                 st.caption("(View in single run mode)")
@@ -1794,7 +1890,10 @@ def _page_document(run_id: str, docs: List[Dict], doc_name: str):
     with col2:
         if st.button("⬅ Back to Overview"):
             qp_set(view=None, doc=None)
-            st.rerun()
+            # Clear navigation flag
+            if "nav_to_doc" in st.session_state:
+                del st.session_state["nav_to_doc"]
+            st.rerun()  # Navigation requires rerun
 
     # Check if document has results
     if not doc.get("runs"):
@@ -3462,3 +3561,19 @@ def _render_quality_deep_dive(by_model: Dict, doc_name: str, para_total: int):
             st.dataframe(top_grammar, hide_index=True, use_container_width=True)
         else:
             st.info("No grammar level data available")
+
+
+# ──────────────────────────── Standalone Page Setup ────────────────────
+# When this file is executed directly by Streamlit's multi-page system,
+# set up the page config and sidebar, then call the page function
+# Check if we're being run as a standalone page (not imported)
+if __name__ == "__main__":
+    # Page config
+    st.set_page_config(page_title="Benchmark Analysis - Humanizer Test-Bench", layout="wide", initial_sidebar_state="expanded")
+    
+    # Setup shared sidebar
+    from src.pages._shared_layout import setup_sidebar
+    setup_sidebar()
+    
+    # Call the page function
+    page_runs()

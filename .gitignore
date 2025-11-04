@@ -124,3 +124,7 @@ dmypy.json
 # OS generated files
 $RECYCLE.BIN/
 *.lnk
+
+# Reference/test files (not for production)
+all_detectors_test_optimized.py
+test_api_keys.py

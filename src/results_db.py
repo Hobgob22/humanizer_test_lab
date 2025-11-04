@@ -112,6 +112,17 @@ def _conn(use_local_fallback=False):
                        models    TEXT,
                        json_blob TEXT
                      );""")
+        
+        # Create indexes for faster queries
+        try:
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_runs_ts 
+                ON runs(ts DESC)
+            """)
+        except Exception as e:
+            # Index might already exist or not supported
+            logger.debug(f"Could not create index idx_runs_ts: {e}")
+        
         conn.commit()
         
         yield conn

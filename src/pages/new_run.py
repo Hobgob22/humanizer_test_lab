@@ -2,25 +2,24 @@
 # v8.0 – Background job processing with status monitoring
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List
 
 import streamlit as st
 
-from src.pages.utils import natural_key
-from src.results_db import load_run
-from src.models import MODEL_REGISTRY
-from src.job_manager import (
-    start_benchmark_job, get_job, get_active_jobs, 
-    cancel_job, JobStatus
-)
-from src.humanizers import humanizer as _humanizer
-import src.prompts as _prompts
-
-
 # ─────────────────── project root ────────────────────
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.pages.utils import natural_key
+from src.models import MODEL_REGISTRY
+from src.api_client import get_client, cached_list_jobs
+from src.job_manager import JobStatus  # Keep enum for status checking
+from src.humanizers import humanizer as _humanizer
+import src.prompts as _prompts
 
 # ═════════════════════════════════ helpers ═════════════════════════════
 def _folder_doc_counts(paths: Dict[str, str]) -> Dict[str, int]:
@@ -100,7 +99,12 @@ def _gather_docs(selected: Dict[str, int], paths: Dict[str, str]) -> List[Path]:
 
 def _show_active_jobs():
     """Display active jobs with status and controls."""
-    jobs = get_active_jobs()
+    try:
+        jobs = cached_list_jobs(status="active", limit=20)
+    except Exception as e:
+        st.warning(f"Could not load jobs: {e}")
+        return
+    
     if not jobs:
         return
     
@@ -130,15 +134,24 @@ def _show_active_jobs():
             with col4:
                 if st.button("❌", key=f"cancel_{job['job_id']}", 
                            help="Cancel this job"):
-                    if cancel_job(job['job_id']):
+                    try:
+                        get_client().cancel_job(job['job_id'])
+                        st.success("Job cancelled")
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to cancel job: {e}")
     
     st.divider()
 
 
 def _show_job_monitor(job_id: str):
     """Show detailed monitoring for a specific job."""
-    job = get_job(job_id)
+    try:
+        job = get_client().get_job(job_id)
+    except Exception as e:
+        st.error(f"Could not load job: {e}")
+        return
+    
     if not job:
         st.error("Job not found!")
         return
@@ -177,10 +190,13 @@ def _show_job_monitor(job_id: str):
     with col4:
         if job['status'] in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
             if st.button("Cancel Job", type="secondary"):
-                if cancel_job(job_id):
+                try:
+                    get_client().cancel_job(job_id)
                     st.success("Job cancelled")
-                    time.sleep(1)
+                    # Remove sleep - rerun immediately
                     st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to cancel job: {e}")
     
     # Current document
     if job['current_doc'] and job['status'] == JobStatus.RUNNING.value:
@@ -191,20 +207,39 @@ def _show_job_monitor(job_id: str):
         st.error(f"Error: {job['error']}")
     
     # Logs
-    if job['logs']:
-        import json
-        logs = json.loads(job['logs'])
+    try:
+        logs_data = get_client().get_job_logs(job_id, limit=20)
+        logs = logs_data.get('logs', [])
         if logs:
             with st.expander("📜 Job Logs", expanded=True):
                 # Show last 20 logs
                 for log_entry in logs[-20:]:
                     timestamp = time.strftime('%H:%M:%S', time.localtime(log_entry['timestamp']))
                     st.text(f"[{timestamp}] {log_entry['message']}")
+    except Exception as e:
+        # Fallback to stored logs if API fails
+        if job.get('logs'):
+            import json
+            try:
+                logs = json.loads(job['logs'])
+                if logs:
+                    with st.expander("📜 Job Logs", expanded=True):
+                        for log_entry in logs[-20:]:
+                            timestamp = time.strftime('%H:%M:%S', time.localtime(log_entry['timestamp']))
+                            st.text(f"[{timestamp}] {log_entry['message']}")
+            except:
+                pass
     
-    # Auto-refresh for active jobs
+    # Auto-refresh for active jobs - use Streamlit's built-in refresh
     if job['status'] in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
-        time.sleep(2)  # Wait 2 seconds before refresh
-        st.rerun()
+        # Use placeholder to avoid full page rerun
+        if "last_refresh" not in st.session_state:
+            st.session_state.last_refresh = time.time()
+        
+        # Refresh every 3 seconds
+        if time.time() - st.session_state.last_refresh > 3:
+            st.session_state.last_refresh = time.time()
+            st.rerun()
     
     # Show completion message
     if job['status'] == JobStatus.COMPLETED.value:
@@ -225,7 +260,7 @@ def page_new_run():
     if "monitoring_job" in st.session_state:
         _show_job_monitor(st.session_state.monitoring_job)
         
-        if st.button("← Back to New Run"):
+        if st.button("← Back to New Run", key="back_to_new_run"):
             del st.session_state.monitoring_job
             st.rerun()
         
@@ -431,34 +466,86 @@ def page_new_run():
         disabled=not (run_name.strip() and folder_labels and model_labels),
         help="Start the benchmark as a background job"
     ):
-        if load_run(run_name):
-            st.error("Run name already exists")
-            st.stop()
+        print("=" * 80, flush=True)
+        print("[START] [STREAMLIT] START JOB BUTTON CLICKED!", flush=True)
+        print("=" * 80, flush=True)
+        
+        # Check if run name exists via API
+        try:
+            print(f"[STREAMLIT] Checking for existing run: {run_name}", flush=True)
+            existing_run = get_client().get_run_summary(run_name)
+            if existing_run:
+                print(f"[STREAMLIT] Run name already exists: {run_name}", flush=True)
+                st.error("Run name already exists")
+                st.stop()
+            print("[STREAMLIT] No existing run found - proceeding", flush=True)
+        except Exception as e:
+            print(f"[STREAMLIT] Exception checking run (expected if new): {e}", flush=True)
+            pass
 
+        print(f"[STREAMLIT] Gathering documents for: {doc_counts}", flush=True)
         docs = _gather_docs(doc_counts, FOLDERS)
         if not docs:
+            print("[STREAMLIT] ERROR: No .docx files found", flush=True)
             st.error("No .docx files found for the current settings")
             st.stop()
 
-        # Start background job
+        print(f"[STREAMLIT] Found {len(docs)} documents", flush=True)
+        
+        # Prepare job data
+        total_docs = len(docs)
+        
+        # Start background job via API
         with st.spinner("Starting background job..."):
-            _humanizer.set_prompt_overrides(prompt_overrides)
-            job_id = start_benchmark_job(
-                run_name=run_name,
-                docs=docs,
-                folders=folder_labels,
-                models=model_labels,
-                iterations=iterations,
-                doc_counts=doc_counts,
-                include_doc_mode=include_doc_mode,  # Pass the humanization mode parameter
-                use_gptzero=use_gptzero,  # Pass detector selection
-                use_sapling=use_sapling   # Pass detector selection
-            )
-            
-            st.success(f"✅ Job started! ID: {job_id}")
-            st.info("The job is running in the background. You can navigate to other pages or close this tab.")
-            
-            # Set monitoring flag
-            st.session_state.monitoring_job = job_id
-            time.sleep(1)
-            st.rerun()
+            try:
+                print("[STREAMLIT] Setting prompt overrides...", flush=True)
+                _humanizer.set_prompt_overrides(prompt_overrides)
+                
+                job_data = {
+                    "run_name": run_name,
+                    "folders": folder_labels,
+                    "models": model_labels,
+                    "iterations": iterations,
+                    "doc_counts": doc_counts,
+                    "total_docs": total_docs,
+                    "include_doc_mode": include_doc_mode,
+                    "use_gptzero": use_gptzero,
+                    "use_sapling": use_sapling
+                }
+                
+                print(f"[STREAMLIT] Calling create_job API with data: {job_data}", flush=True)
+                job_response = get_client().create_job(job_data)
+                print(f"[STREAMLIT] API response received: {job_response}", flush=True)
+                job_id = job_response['job_id']
+                
+                print(f"[STREAMLIT] [OK] Job started successfully! ID: {job_id}", flush=True)
+                st.success(f"[OK] Job started! ID: {job_id}")
+                st.info("The job is running in the background. You can navigate to other pages or close this tab.")
+                
+                # Set monitoring flag
+                print(f"[STREAMLIT] Setting monitoring_job in session_state: {job_id}", flush=True)
+                st.session_state.monitoring_job = job_id
+                # Remove sleep - rerun immediately
+                print("[STREAMLIT] Calling st.rerun()...", flush=True)
+                st.rerun()
+            except Exception as e:
+                print(f"[STREAMLIT] [ERROR] Exception: {type(e).__name__}: {e}", flush=True)
+                import traceback
+                print(traceback.format_exc(), flush=True)
+                st.error(f"Failed to start job: {e}")
+                st.exception(e)
+
+# ──────────────────────────── Standalone Page Setup ────────────────────
+# When this file is executed directly by Streamlit's multi-page system,
+# set up the page config and sidebar, then call the page function
+# Check if we're being run as a standalone page (not imported)
+if __name__ == "__main__":
+    # Page config
+    st.set_page_config(page_title="New Run - Humanizer Test-Bench", layout="wide", initial_sidebar_state="expanded")
+    
+    # Setup shared sidebar
+    from src.pages._shared_layout import setup_sidebar
+    setup_sidebar()
+    
+    # Call the page function
+    page_new_run()

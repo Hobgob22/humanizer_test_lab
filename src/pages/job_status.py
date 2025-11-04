@@ -4,16 +4,21 @@ Job status page for monitoring background benchmark jobs.
 Shows active jobs, recent completed jobs, and detailed logs.
 """
 
+import sys
 import json
 import time
+from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
 
-from src.job_manager import (
-    get_active_jobs, get_recent_jobs, get_job, cancel_job,
-    JobStatus, cleanup_old_jobs
-)
+# ─────────────────── project root ────────────────────
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.api_client import get_client, cached_list_jobs
+from src.job_manager import JobStatus, cleanup_old_jobs  # Keep JobStatus enum and cleanup function
 
 def _format_duration(seconds: float) -> str:
     """Format duration in human-readable format."""
@@ -119,13 +124,17 @@ def _show_job_card(job: dict, show_details: bool = False):
             # Action buttons
             if status in (JobStatus.PENDING.value, JobStatus.RUNNING.value):
                 if st.button("❌", key=f"cancel_{job_id}", help="Cancel job"):
-                    if cancel_job(job_id):
+                    try:
+                        get_client().cancel_job(job_id)
                         st.success("Job cancelled")
-                        time.sleep(0.5)
+                        # Remove sleep - rerun immediately
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to cancel: {e}")
             
             if st.button("📋", key=f"details_{job_id}", help="Show details"):
                 st.session_state[f"show_details_{job_id}"] = not st.session_state.get(f"show_details_{job_id}", False)
+                # Use st.experimental_rerun for faster updates
                 st.rerun()
         
         # Details section
@@ -225,8 +234,9 @@ def _show_job_card(job: dict, show_details: bool = False):
                 st.error(f"**Error:** {job['error']}")
             
             # Logs
-            if job['logs']:
-                logs = json.loads(job['logs'])
+            try:
+                logs_data = get_client().get_job_logs(job_id, limit=50)
+                logs = logs_data.get('logs', [])
                 if logs:
                     with st.expander("📜 Detailed Logs", expanded=False):
                         # Reverse logs to show most recent first
@@ -243,23 +253,55 @@ def _show_job_card(job: dict, show_details: bool = False):
                                 st.markdown(f":orange[{ts}] {msg}")
                             else:
                                 st.text(f"{ts} {msg}")
+            except Exception as e:
+                # Fallback to stored logs
+                if job.get('logs'):
+                    try:
+                        logs = json.loads(job['logs'])
+                        if logs:
+                            with st.expander("📜 Detailed Logs", expanded=False):
+                                for log_entry in reversed(logs[-50:]):
+                                    ts = _format_timestamp(log_entry['timestamp'])
+                                    msg = log_entry['message']
+                                    
+                                    if "❌" in msg or "ERROR" in msg.upper():
+                                        st.markdown(f":red[{ts}] {msg}")
+                                    elif "✅" in msg or "completed" in msg.lower():
+                                        st.markdown(f":green[{ts}] {msg}")
+                                    elif "⚠️" in msg or "skip" in msg.lower():
+                                        st.markdown(f":orange[{ts}] {msg}")
+                                    else:
+                                        st.text(f"{ts} {msg}")
+                    except:
+                        pass
         
         st.divider()
+
 
 def page_job_status():
     """Main job status page."""
     st.header("🔄 Job Status Monitor")
     
-    # Page controls
+    # Page controls - use session state to persist settings
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        auto_refresh = st.checkbox("Auto-refresh", value=True, 
-                                  help="Automatically refresh page every 5 seconds")
+        auto_refresh = st.checkbox(
+            "Auto-refresh", 
+            value=st.session_state.get("auto_refresh", True),
+            key="auto_refresh_checkbox",
+            help="Automatically refresh page every 5 seconds"
+        )
+        st.session_state.auto_refresh = auto_refresh
     
     with col2:
-        show_completed = st.checkbox("Show completed jobs", value=True,
-                                   help="Display completed, failed, and cancelled jobs")
+        show_completed = st.checkbox(
+            "Show completed jobs", 
+            value=st.session_state.get("show_completed", True),
+            key="show_completed_checkbox",
+            help="Display completed, failed, and cancelled jobs"
+        )
+        st.session_state.show_completed = show_completed
     
     with col3:
         if st.button("🗑️ Cleanup", help="Remove jobs older than 7 days"):
@@ -267,34 +309,54 @@ def page_job_status():
             st.success("Old jobs cleaned up")
             st.rerun()
     
+    # Create containers for dynamic content to avoid full page reload
+    active_jobs_container = st.container()
+    completed_jobs_container = st.container()
+    
     # Active jobs section
-    active_jobs = get_active_jobs()
-    
-    if active_jobs:
-        st.subheader(f"🚀 Active Jobs ({len(active_jobs)})")
+    with active_jobs_container:
+        try:
+            active_jobs = cached_list_jobs(status="active", limit=20)
+        except Exception as e:
+            st.warning(f"Could not load active jobs: {e}")
+            active_jobs = []
         
-        for job in active_jobs:
-            _show_job_card(job)
-    else:
-        st.info("No active jobs running")
-    
-    # Recent jobs section
-    if show_completed:
-        recent_jobs = get_recent_jobs(limit=20)
-        completed_jobs = [
-            j for j in recent_jobs 
-            if j['status'] in (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value)
-        ]
-        
-        if completed_jobs:
-            st.subheader(f"📋 Recent Jobs ({len(completed_jobs)})")
+        if active_jobs:
+            st.subheader(f"🚀 Active Jobs ({len(active_jobs)})")
             
-            for job in completed_jobs:
+            for job in active_jobs:
                 _show_job_card(job)
+        else:
+            st.info("No active jobs running")
+    
+    # Recent jobs section - filter out any jobs already shown in active
+    with completed_jobs_container:
+        if show_completed:
+            try:
+                recent_jobs = cached_list_jobs(limit=20)
+                active_job_ids = {j['job_id'] for j in active_jobs}
+                completed_jobs = [
+                    j for j in recent_jobs 
+                    if j['status'] in (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value)
+                    and j['job_id'] not in active_job_ids  # Don't show jobs already in active section
+                ]
+            except Exception as e:
+                st.warning(f"Could not load completed jobs: {e}")
+                completed_jobs = []
+            
+            if completed_jobs:
+                st.subheader(f"📋 Recent Jobs ({len(completed_jobs)})")
+                
+                for job in completed_jobs:
+                    _show_job_card(job)
     
     # Summary statistics
     with st.expander("📊 Job Statistics", expanded=False):
-        all_jobs = get_recent_jobs(limit=100)
+        try:
+            all_jobs = cached_list_jobs(limit=100)
+        except Exception as e:
+            st.warning(f"Could not load job statistics: {e}")
+            all_jobs = []
         
         if all_jobs:
             col1, col2, col3, col4 = st.columns(4)
@@ -321,7 +383,41 @@ def page_job_status():
                 st.progress(success_rate / 100)
                 st.caption(f"Success rate: {success_rate:.1f}%")
     
-    # Auto-refresh logic
+    # Auto-refresh logic - use a longer interval to reduce reloads
     if auto_refresh and active_jobs:
-        time.sleep(5)  # Refresh every 5 seconds
-        st.rerun()
+        # Use session state to track refresh timing
+        refresh_interval = 10  # Increased from 5 to 10 seconds to reduce reloads
+        
+        if "last_refresh_time" not in st.session_state:
+            st.session_state.last_refresh_time = time.time()
+        
+        elapsed = time.time() - st.session_state.last_refresh_time
+        remaining = max(0, refresh_interval - elapsed)
+        
+        # Create a placeholder for the refresh indicator
+        refresh_placeholder = st.empty()
+        if remaining > 0:
+            refresh_placeholder.caption(f"⏱️ Auto-refreshing in {remaining:.0f}s...")
+        else:
+            refresh_placeholder.caption("🔄 Refreshing...")
+            st.session_state.last_refresh_time = time.time()
+            # Only rerun if we actually need to refresh
+            st.rerun()
+
+
+# ──────────────────────────── Standalone Page Setup ────────────────────
+# When this file is executed directly by Streamlit's multi-page system,
+# set up the page config and sidebar, then call the page function
+# Check if we're being run as a standalone page (not imported)
+if __name__ == "__main__":
+    # Page config
+    st.set_page_config(page_title="Job Status - Humanizer Test-Bench", layout="wide", initial_sidebar_state="expanded")
+    
+    # Setup shared sidebar
+    from src.pages._shared_layout import setup_sidebar
+    setup_sidebar()
+    
+    # Call the page function
+    page_job_status()
+
+

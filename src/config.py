@@ -70,7 +70,7 @@ MAX_ITERATIONS      = int(os.getenv("MAX_ITER",            5))
 # - GPTZero: 500 req/min (8.3 req/sec)
 # - Sapling: 120,000 chars/2min (1,000 chars/sec)
 
-HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 100))   # Can handle mixed providers
+HUMANIZER_MAX_WORKERS = int(os.getenv("HUMANIZER_MAX_WORKERS", 100))   # Reduced to prevent rate limiting (OpenAI: 1500 req/min)
 GEMINI_MAX_WORKERS    = int(os.getenv("GEMINI_MAX_WORKERS", 70))      # 700 req/min
 DETECTOR_MAX_WORKERS  = int(os.getenv("DETECTOR_MAX_WORKERS", 20))   # Mixed detectors
 
@@ -91,3 +91,13 @@ MAX_PARALLEL_DOCS     = int(os.getenv("MAX_PARALLEL_DOCS", 10))
 
 # Hard-cap on in-memory log history per job (oldest lines dropped)
 LOG_HISTORY_LIMIT     = int(os.getenv("LOG_HISTORY_LIMIT", 500))
+
+# ────────────────────────────────────────────────────────────────
+# 7 · API CONFIGURATION
+# ────────────────────────────────────────────────────────────────
+API_HOST             = os.getenv("API_HOST", "0.0.0.0")
+API_PORT             = int(os.getenv("API_PORT", 8000))
+API_BASE_URL         = os.getenv("API_BASE_URL", f"http://localhost:{API_PORT}")
+WS_URL                = os.getenv("WS_URL", f"ws://localhost:{API_PORT}")
+CACHE_TTL_STATISTICS  = int(os.getenv("CACHE_TTL_STATISTICS", 1800))
+CACHE_TTL_RUNS        = int(os.getenv("CACHE_TTL_RUNS", 3600))
