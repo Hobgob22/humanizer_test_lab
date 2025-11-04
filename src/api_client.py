@@ -10,29 +10,39 @@ import streamlit as st
 from src.config import API_BASE_URL, WS_URL, APP_AUTH_KEY
 
 class APIClient:
-    """Client for making requests to the FastAPI backend."""
-    
+    """Client for making requests to the FastAPI backend with connection pooling."""
+
     def __init__(self, base_url: str = None):
         self.base_url = base_url or API_BASE_URL
         self.headers = {
             "X-API-Key": APP_AUTH_KEY or "dev",
             "Content-Type": "application/json"
         }
-    
+        # Persistent client with connection pooling
+        self._client = httpx.Client(
+            timeout=10.0,  # Reduced from 30s for faster failures
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=50,
+                keepalive_expiry=30.0
+            ),
+            http2=True  # Enable HTTP/2 for better performance
+        )
+
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make an HTTP request to the API."""
+        """Make an HTTP request to the API using persistent connection."""
         url = f"{self.base_url}{endpoint}"
-        
+
         try:
-            with httpx.Client(timeout=30.0) as client:
-                response = client.request(
-                    method,
-                    url,
-                    headers=self.headers,
-                    **kwargs
-                )
-                response.raise_for_status()
-                return response.json()
+            # Reuse persistent client - no connection overhead
+            response = self._client.request(
+                method,
+                url,
+                headers=self.headers,
+                **kwargs
+            )
+            response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as e:
             error_detail = "Unknown error"
             try:
@@ -42,6 +52,15 @@ class APIClient:
             raise Exception(f"API error: {error_detail}")
         except Exception as e:
             raise Exception(f"API request failed: {str(e)}")
+
+    def close(self):
+        """Close the persistent HTTP client."""
+        if self._client:
+            self._client.close()
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        self.close()
     
     # Job endpoints
     def list_jobs(self, status: Optional[str] = None, limit: int = 20) -> List[Dict]:
@@ -127,18 +146,18 @@ def get_client() -> APIClient:
         _client = APIClient()
     return _client
 
-# Cached versions for Streamlit
-@st.cache_data(ttl=60, show_spinner="Loading jobs...")
+# Cached versions for Streamlit with optimized TTLs and spinners
+@st.cache_data(ttl=5, show_spinner=False)  # Short TTL for active data, no spinner (fast with connection pooling)
 def cached_list_jobs(status: Optional[str] = None, limit: int = 20):
-    """Cached version of list_jobs."""
+    """Cached version of list_jobs with optimized TTL."""
     return get_client().list_jobs(status=status, limit=limit)
 
-@st.cache_data(ttl=300, show_spinner="Loading run...")
+@st.cache_data(ttl=300, show_spinner=False)  # Keep longer TTL for runs, no spinner on cache hit
 def cached_get_run(run_name: str):
     """Cached version of get_run."""
     return get_client().get_run(run_name)
 
-@st.cache_data(ttl=300, show_spinner="Loading runs...")
+@st.cache_data(ttl=60, show_spinner=False)  # Moderate TTL for run lists, no spinner
 def cached_list_runs(limit: int = 20, offset: int = 0):
     """Cached version of list_runs."""
     return get_client().list_runs(limit=limit, offset=offset)

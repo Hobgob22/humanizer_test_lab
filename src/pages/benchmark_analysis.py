@@ -59,6 +59,12 @@ def _iter_drafts(docs: List[Dict]) -> Tuple[Dict, ...]:
             yield doc, dr
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_load_run_preview(run_id: str, max_docs: int = 20):
+    """Cached loader for run preview with limited documents (fast initial load)."""
+    from src.results_db import load_run_with_limit
+    return load_run_with_limit(run_id, max_docs=max_docs)
+
 @st.cache_data(ttl=3600, show_spinner="Merging run data...")
 def _merge_runs_data(run_ids: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
     """
@@ -1105,8 +1111,22 @@ def _page_single_run(runs_meta: List[Dict]) -> None:
                     st.error(f"Failed to delete run: {e}")
                     st.session_state[f"{delete_key}_confirmed"] = False
 
+    # Add preview mode toggle for faster loading
+    preview_mode = st.checkbox(
+        "⚡ Quick Preview Mode (load first 20 docs only)",
+        value=True,
+        key=f"preview_{run_id}",
+        help="Enable for faster initial loading. Disable to load all documents."
+    )
+
     try:
-        run = cached_get_run(run_id) or {}
+        if preview_mode:
+            # Use cached optimized loader with document limit (fast!)
+            run = _cached_load_run_preview(run_id, max_docs=20) or {}
+            if run.get("truncated"):
+                st.info(f"ℹ️ Showing first 20 of {run.get('total_docs', 0)} documents. Uncheck preview mode to load all documents.")
+        else:
+            run = cached_get_run(run_id) or {}
     except Exception as e:
         st.warning(f"Could not load run {run_id}: {e}")
         run = {}

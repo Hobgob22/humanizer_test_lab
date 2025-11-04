@@ -120,18 +120,34 @@ def init_db():
                 conn.execute("ALTER TABLE jobs ADD COLUMN active_docs TEXT DEFAULT '[]'")
                 print("[JOB_MANAGER] Added column: active_docs", flush=True)
         
+        # Create separate logs table for O(1) insertions
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                message TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            )
+        """)
+        print("[JOB_MANAGER] [OK] Table 'job_logs' created/verified", flush=True)
+
         # Create indexes for faster queries
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_jobs_status 
+            CREATE INDEX IF NOT EXISTS idx_jobs_status
             ON jobs(status, created_at DESC)
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_jobs_status_created 
+            CREATE INDEX IF NOT EXISTS idx_jobs_status_created
             ON jobs(status, created_at DESC)
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_jobs_created 
+            CREATE INDEX IF NOT EXISTS idx_jobs_created
             ON jobs(created_at DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_job_logs_job_ts
+            ON job_logs(job_id, timestamp DESC)
         """)
         conn.commit()
         print("[JOB_MANAGER] [OK] init_db() completed successfully", flush=True)
@@ -178,12 +194,12 @@ def create_job(
                 conn.execute("""
                     INSERT INTO jobs (
                         job_id, run_name, status, created_at, total_docs,
-                        folders, models, iterations, doc_counts, include_doc_mode, use_gptzero, use_sapling, logs
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        folders, models, iterations, doc_counts, include_doc_mode, use_gptzero, use_sapling
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     job_id, run_name, JobStatus.PENDING.value, timestamp, total_docs,
                     json.dumps(folders), json.dumps(models), iterations,
-                    json.dumps(doc_counts), int(include_doc_mode), int(use_gptzero), int(use_sapling), json.dumps([])
+                    json.dumps(doc_counts), int(include_doc_mode), int(use_gptzero), int(use_sapling)
                 ))
                 conn.commit()
             
@@ -210,35 +226,27 @@ def update_job_status(
     add_active_doc: Optional[str] = None,
     remove_active_doc: Optional[str] = None
 ):
-    """Update job status and optionally add a log entry."""
+    """Update job status and optionally add a log entry to separate logs table (O(1) operation)."""
     with _get_conn() as conn:
-        # Get current logs
-        cursor = conn.execute("SELECT logs FROM jobs WHERE job_id = ?", (job_id,))
-        row = cursor.fetchone()
-        if row:
-            logs = json.loads(row["logs"] or "[]")
-            if log_entry:
-                logs.append({
-                    "timestamp": time.time(),
-                    "message": log_entry
-                })
-                # Keep only the most recent N messages
-                if len(logs) > LOG_HISTORY_LIMIT:
-                    logs = logs[-LOG_HISTORY_LIMIT:]
+        # Add log entry to separate table (O(1) operation - no read/parse/write overhead)
+        if log_entry:
+            conn.execute("""
+                INSERT INTO job_logs (job_id, timestamp, message)
+                VALUES (?, ?, ?)
+            """, (job_id, time.time(), log_entry))
 
-        
-        # Build update query
+        # Build update query for job status
         updates = ["status = ?"]
         params = [status.value]
-        
+
         if status == JobStatus.RUNNING and "started_at" not in updates:
             updates.append("started_at = ?")
             params.append(time.time())
-        
+
         if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
             updates.append("completed_at = ?")
             params.append(time.time())
-        
+
         if current_doc is not None:
             # Combine document and stage info for current_doc field
             if current_stage:
@@ -247,7 +255,7 @@ def update_job_status(
                 combined_status = current_doc
             updates.append("current_doc = ?")
             params.append(combined_status)
-        
+
         # Handle active documents list
         if add_active_doc is not None or remove_active_doc is not None:
             # Get current active docs
@@ -258,9 +266,9 @@ def update_job_status(
                     active_docs = json.loads(row["active_docs"] or "[]")
                 except json.JSONDecodeError:
                     active_docs = []
-                
+
                 logger.info(f"📋 Current active docs before update: {active_docs}")
-                
+
                 # Add document to active list
                 if add_active_doc:
                     doc_stage = f"{add_active_doc} | {current_stage}" if current_stage else add_active_doc
@@ -268,32 +276,53 @@ def update_job_status(
                     active_docs = [doc for doc in active_docs if not doc.startswith(f"{add_active_doc} |")]
                     active_docs.append(doc_stage)
                     logger.info(f"➕ Added '{doc_stage}' to active docs")
-                
+
                 # Remove document from active list
                 if remove_active_doc:
                     original_count = len(active_docs)
                     active_docs = [doc for doc in active_docs if not doc.startswith(f"{remove_active_doc} |")]
                     logger.info(f"➖ Removed docs starting with '{remove_active_doc}' (removed {original_count - len(active_docs)} entries)")
-                
+
                 logger.info(f"📋 New active docs after update: {active_docs}")
                 updates.append("active_docs = ?")
                 params.append(json.dumps(active_docs))
-        
+
         if processed_docs is not None:
             updates.append("processed_docs = ?")
             params.append(processed_docs)
-        
+
         if error is not None:
             updates.append("error = ?")
             params.append(error)
-        
-        if log_entry:
-            updates.append("logs = ?")
-            params.append(json.dumps(logs))
-        
+
         params.append(job_id)
         conn.execute(f"UPDATE jobs SET {', '.join(updates)} WHERE job_id = ?", params)
         conn.commit()
+
+def get_job_logs(job_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Get the most recent logs for a job from the separate logs table.
+    Fast O(log n) query with index.
+
+    Args:
+        job_id: Job ID
+        limit: Maximum number of logs to return (default 50)
+
+    Returns:
+        List of log entries with timestamp and message
+    """
+    with _get_conn() as conn:
+        cursor = conn.execute("""
+            SELECT timestamp, message
+            FROM job_logs
+            WHERE job_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (job_id, limit))
+
+        logs = [{"timestamp": row[0], "message": row[1]} for row in cursor.fetchall()]
+        # Return in chronological order (oldest first)
+        return list(reversed(logs))
 
 def save_job_results(job_id: str, results: List[Dict]):
     """Save the results for a completed job."""
