@@ -183,30 +183,57 @@ def save_run(name: str, folders: list[str], models: list[str], data: dict, max_r
         logger.error(f"💾 Run '{name}' is preserved in JSON backup at: {BACKUP_DIR}")
         raise Exception(f"Database save failed. Turso error: {last_error}, Local fallback error: {fallback_error}. JSON backup available in {BACKUP_DIR}")
 
-def list_runs() -> list[dict]:
-    """List all runs with fallback logic for Turso outages."""
+def list_runs(limit: int = None, offset: int = 0) -> tuple[list[dict], int]:
+    """
+    List all runs with pagination support and fallback logic for Turso outages.
+
+    Returns:
+        tuple: (list of runs, total count)
+    """
     try:
         with _conn() as c:
-            cur = c.execute("SELECT name, ts, folders, models FROM runs ORDER BY ts DESC")
+            # Get total count
+            total = c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+            # Get paginated results
+            if limit is not None:
+                cur = c.execute(
+                    "SELECT name, ts, folders, models FROM runs ORDER BY ts DESC LIMIT ? OFFSET ?",
+                    (limit, offset)
+                )
+            else:
+                cur = c.execute("SELECT name, ts, folders, models FROM runs ORDER BY ts DESC")
+
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
-            logger.debug(f"Listed {len(rows)} runs from primary database")
-            return [dict(zip(cols,row)) for row in rows]
+            logger.debug(f"Listed {len(rows)} runs from primary database (total: {total})")
+            return [dict(zip(cols,row)) for row in rows], total
     except Exception as e:
         error_msg = str(e).lower()
         if any(keyword in error_msg for keyword in ['hrana', 'bad gateway', '502', 'turso', 'timeout']):
             logger.warning(f"⚠️ Turso API error in list_runs, falling back to local SQLite: {e}")
             try:
                 with _conn(use_local_fallback=True) as c:
-                    cur = c.execute("SELECT name, ts, folders, models FROM runs ORDER BY ts DESC")
+                    # Get total count
+                    total = c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+                    # Get paginated results
+                    if limit is not None:
+                        cur = c.execute(
+                            "SELECT name, ts, folders, models FROM runs ORDER BY ts DESC LIMIT ? OFFSET ?",
+                            (limit, offset)
+                        )
+                    else:
+                        cur = c.execute("SELECT name, ts, folders, models FROM runs ORDER BY ts DESC")
+
                     cols = [d[0] for d in cur.description]
                     rows = cur.fetchall()
-                    logger.info(f"✓ Listed {len(rows)} runs from local fallback database")
-                    return [dict(zip(cols,row)) for row in rows]
+                    logger.info(f"✓ Listed {len(rows)} runs from local fallback database (total: {total})")
+                    return [dict(zip(cols,row)) for row in rows], total
             except Exception as fallback_error:
                 logger.error(f"❌ Failed to list runs from local database: {fallback_error}")
                 logger.info(f"💾 Check JSON backups in: {BACKUP_DIR}")
-                return []  # Return empty list instead of crashing
+                return [], 0  # Return empty list and 0 count instead of crashing
         else:
             logger.error(f"❌ Database error in list_runs: {e}")
             raise e
@@ -240,6 +267,81 @@ def load_run(name: str) -> dict|None:
         else:
             logger.error(f"❌ Database error loading run '{name}': {e}")
             raise e
+
+def load_run_summary(name: str) -> dict|None:
+    """
+    Load ONLY metadata for a run (no document data).
+    Much faster than load_run() for list views.
+    """
+    try:
+        with _conn() as c:
+            cur = c.execute("SELECT name, ts, folders, models FROM runs WHERE name=?", (name,))
+            row = cur.fetchone()
+            if row:
+                logger.debug(f"Loaded summary for run '{name}' from primary database")
+                return {
+                    "name": row[0],
+                    "ts": row[1],
+                    "folders": row[2].split(',') if row[2] else [],
+                    "models": row[3].split(',') if row[3] else []
+                }
+            return None
+    except Exception as e:
+        error_msg = str(e).lower()
+        if any(keyword in error_msg for keyword in ['hrana', 'bad gateway', '502', 'turso', 'timeout']):
+            logger.warning(f"⚠️ Turso API error in load_run_summary, falling back to local SQLite: {e}")
+            try:
+                with _conn(use_local_fallback=True) as c:
+                    cur = c.execute("SELECT name, ts, folders, models FROM runs WHERE name=?", (name,))
+                    row = cur.fetchone()
+                    if row:
+                        logger.info(f"✓ Loaded summary for run '{name}' from local fallback database")
+                        return {
+                            "name": row[0],
+                            "ts": row[1],
+                            "folders": row[2].split(',') if row[2] else [],
+                            "models": row[3].split(',') if row[3] else []
+                        }
+                    return None
+            except Exception as fallback_error:
+                logger.error(f"❌ Failed to load run summary from local database: {fallback_error}")
+                return None
+        else:
+            logger.error(f"❌ Database error loading run summary '{name}': {e}")
+            raise e
+
+def load_run_with_limit(name: str, max_docs: int = None) -> dict|None:
+    """
+    Load a run with optional document limit for faster preview.
+
+    Args:
+        name: Run name
+        max_docs: Maximum number of documents to load (None = all)
+
+    Returns:
+        Run data with 'truncated' flag if docs were limited
+    """
+    full_data = load_run(name)
+    if not full_data:
+        return None
+
+    docs = full_data.get("docs", [])
+    total_docs = len(docs)
+
+    if max_docs is not None and total_docs > max_docs:
+        logger.info(f"Loading first {max_docs} of {total_docs} documents for run '{name}'")
+        return {
+            **full_data,
+            "docs": docs[:max_docs],
+            "total_docs": total_docs,
+            "truncated": True
+        }
+
+    return {
+        **full_data,
+        "total_docs": total_docs,
+        "truncated": False
+    }
 
 def delete_run(name: str):
     """Delete a run with fallback logic for Turso outages."""

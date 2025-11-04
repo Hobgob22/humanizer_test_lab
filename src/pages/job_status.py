@@ -383,26 +383,30 @@ def page_job_status():
                 st.progress(success_rate / 100)
                 st.caption(f"Success rate: {success_rate:.1f}%")
     
-    # Auto-refresh logic - use a longer interval to reduce reloads
+    # Auto-refresh logic - optimized to reduce unnecessary reruns
     if auto_refresh and active_jobs:
         # Use session state to track refresh timing
-        refresh_interval = 10  # Increased from 5 to 10 seconds to reduce reloads
-        
+        refresh_interval = 5  # Reduced to 5s for better UX (with optimized caching)
+
         if "last_refresh_time" not in st.session_state:
             st.session_state.last_refresh_time = time.time()
-        
+
         elapsed = time.time() - st.session_state.last_refresh_time
         remaining = max(0, refresh_interval - elapsed)
-        
-        # Create a placeholder for the refresh indicator
-        refresh_placeholder = st.empty()
-        if remaining > 0:
-            refresh_placeholder.caption(f"⏱️ Auto-refreshing in {remaining:.0f}s...")
-        else:
-            refresh_placeholder.caption("🔄 Refreshing...")
+
+        # Only trigger rerun when interval has passed
+        if remaining == 0:
             st.session_state.last_refresh_time = time.time()
-            # Only rerun if we actually need to refresh
+            # Clear relevant caches to force refresh
+            cached_list_jobs.clear()
+            time.sleep(0.1)  # Small delay to ensure cache is cleared
             st.rerun()
+        else:
+            # Show countdown without triggering rerun
+            if remaining > 0:
+                st.caption(f"⏱️ Next refresh in {remaining:.0f}s...")
+                time.sleep(1)  # Sleep 1s and rerun to update countdown
+                st.rerun()
 
 
 # ──────────────────────────── Standalone Page Setup ────────────────────

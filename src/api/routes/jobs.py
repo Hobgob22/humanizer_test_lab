@@ -11,7 +11,7 @@ from src.api.models import JobCreate, JobResponse
 from src.api.dependencies import get_job_db_conn, verify_api_key
 from src.job_manager import (
     create_job, get_job, get_active_jobs, get_recent_jobs,
-    cancel_job, start_benchmark_job, JobStatus
+    cancel_job, start_benchmark_job, get_job_logs as get_logs_from_db, JobStatus
 )
 from pathlib import Path
 import json
@@ -166,15 +166,16 @@ async def get_job_logs(
     limit: int = 50,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get logs for a specific job."""
+    """Get logs for a specific job from separate logs table (fast O(log n) query)."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    logs = json.loads(job.get("logs", "[]"))
+
+    # Use optimized separate logs table query
+    logs = get_logs_from_db(job_id, limit=limit)
     return {
         "job_id": job_id,
-        "logs": logs[-limit:] if len(logs) > limit else logs,
+        "logs": logs,
         "total": len(logs)
     }
 

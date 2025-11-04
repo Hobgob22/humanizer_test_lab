@@ -21,12 +21,9 @@ async def list_runs_endpoint(
 ):
     """List all runs with pagination."""
     try:
-        all_runs = list_runs()
-        
-        # Apply pagination
-        total = len(all_runs)
-        paginated_runs = all_runs[offset:offset + limit]
-        
+        # Use optimized pagination from database
+        paginated_runs, total = list_runs(limit=limit, offset=offset)
+
         # Convert to response format
         summaries = []
         for run in paginated_runs:
@@ -36,7 +33,7 @@ async def list_runs_endpoint(
                 folders=run["folders"],
                 models=run["models"]
             ))
-        
+
         return RunListResponse(
             runs=summaries,
             total=total,
