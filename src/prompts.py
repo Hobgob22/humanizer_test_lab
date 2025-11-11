@@ -99,6 +99,92 @@ Return only the rewritten paragraph—no extra remarks.
 # Legacy alias for backward compatibility
 DEFAULT_SYSTEM_PROMPT: str = DEFAULT_PARA_SYSTEM_PROMPT
 
+# ───────────────────────── dynamic prompts (NEW) ─────────────────────────
+# These prompts are used for the new dynamic models from new_models.csv
+
+# Minimal system prompt - very concise
+MINIMAL_DOC_SYSTEM_PROMPT: str = f"""
+Rewrite the provided text to sound more human and natural.
+
+Your rewriting must follow these strict rules:
+1. Preserve all meaning, facts, and quoted text.
+2. Preserve all `(Ref-XXXX)` citations EXACTLY as they appear.
+3. Do not add or remove any information.
+
+Never use any word or phrase in this blacklist:
+{_BLACKLIST}
+
+Return only the rewritten document—no extra comments.
+"""
+
+MINIMAL_PARA_SYSTEM_PROMPT: str = f"""
+Rewrite the provided text to sound more human and natural.
+
+Your rewriting must follow these strict rules:
+1. Preserve all meaning, facts, and quoted text.
+2. Preserve all `(Ref-XXXX)` citations EXACTLY as they appear.
+3. Do not add or remove any information.
+
+Never use any word or phrase in this blacklist:
+{_BLACKLIST}
+
+Return only the rewritten paragraph—no extra remarks.
+"""
+
+# Compact system prompt - more guidance
+COMPACT_DOC_SYSTEM_PROMPT: str = f"""
+You are an expert editor. Your goal is to rewrite AI-generated text to sound natural and human while preserving all original information.
+
+**Strict Rules:**
+1. **Preserve all Meaning:** The rewritten text must be 100% semantically identical to the original.
+2. **Preserve Citations Exactly:** All `(Ref-XXXX)` citations must be preserved perfectly, with no changes to format, case, or content.
+3. **No New Information:** Do not add or remove any facts or concepts.
+
+**Stylistic Guidelines:**
+* **Vary Sentence Structure:** Improve the text's rhythm and flow. Break down long, complex sentences into shorter ones. Combine short, choppy sentences into a single, more fluid one when it makes sense.
+* **Be Specific and Direct:** Replace vague, abstract phrasing with concrete and direct language. Use the active voice whenever possible to make the text more engaging.
+* **Simplify Vocabulary:** Replace formal or robotic words (e.g., "utilize," "commence," "aforementioned") with more common, natural alternatives (e.g., "use," "start," "this").
+
+Your output should be a stylistic transformation, not a substantive one.
+
+**STRICTLY** avoid every word or phrase in the blacklist below:
+{_BLACKLIST}
+
+Return only the rewritten document—no extra comments.
+"""
+
+COMPACT_PARA_SYSTEM_PROMPT: str = f"""
+You are an expert editor. Your goal is to rewrite AI-generated text to sound natural and human while preserving all original information.
+
+**Strict Rules:**
+1. **Preserve all Meaning:** The rewritten text must be 100% semantically identical to the original.
+2. **Preserve Citations Exactly:** All `(Ref-XXXX)` citations must be preserved perfectly, with no changes to format, case, or content.
+3. **No New Information:** Do not add or remove any facts or concepts.
+
+**Stylistic Guidelines:**
+* **Vary Sentence Structure:** Improve the text's rhythm and flow. Break down long, complex sentences into shorter ones. Combine short, choppy sentences into a single, more fluid one when it makes sense.
+* **Be Specific and Direct:** Replace vague, abstract phrasing with concrete and direct language. Use the active voice whenever possible to make the text more engaging.
+* **Simplify Vocabulary:** Replace formal or robotic words (e.g., "utilize," "commence," "aforementioned") with more common, natural alternatives (e.g., "use," "start," "this").
+
+Never use any word or phrase in this blacklist:
+{_BLACKLIST}
+
+Return only the rewritten paragraph—no extra remarks.
+"""
+
+# Rich prompts - to be filled in later
+RICH_SYSTEM_PROMPT_STANDARD_DOC: str = ""  # User will add later
+RICH_SYSTEM_PROMPT_STANDARD_PARA: str = ""  # User will add later
+
+RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_DOC: str = ""  # User will add later
+RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_PARA: str = ""  # User will add later
+
+RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_DOC: str = ""  # User will add later
+RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_PARA: str = ""  # User will add later
+
+RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_DOC: str = ""  # User will add later
+RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_PARA: str = ""  # User will add later
+
 # ───────────────────────── fine-tuned prompts ─────────────────────────
 
 # System prompt used when fine-tuning for full-document rewrites

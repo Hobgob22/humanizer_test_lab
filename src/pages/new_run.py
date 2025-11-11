@@ -312,16 +312,119 @@ def page_new_run():
         return
 
     limits = _folder_doc_counts({f: FOLDERS[f] for f in folder_labels})
+
+    # ── 2b · PREVIEW MODE TOGGLE (NEW) ──────────────────────────────
+    st.markdown("### ⚡ Test Mode")
+    preview_mode = st.checkbox(
+        "🔬 Preview Mode (Quick Model Screening)",
+        value=False,
+        help="Preview mode: 1 detector (GPTZero), 1 iteration, up to 30 documents max. Perfect for quickly weeding out poor models.",
+        key="preview_mode"
+    )
+
+    if preview_mode:
+        st.info("📋 **Preview Mode:** Simplified settings for rapid model comparison (1 detector, 1 iteration, max 30 docs)")
+
     doc_counts = _select_documents(folder_labels, limits)
 
-    # ── 3 · model selection ─────────────────────────────────────────
-    all_models = list(MODEL_REGISTRY)
-    model_labels = st.multiselect(
-        "Humanizer models",
-        all_models,
-        default=all_models[:3],
-        help="Select which models you wish to test",
-    )
+    # ── 3 · model selection (IMPROVED WITH GROUPS) ──────────────────
+    st.markdown("### 🤖 Model Selection")
+
+    # Group models by base model
+    from collections import defaultdict
+    model_groups = defaultdict(list)
+    for model_name, meta in MODEL_REGISTRY.items():
+        base = meta.get("base_model", "other")
+        model_groups[base].append(model_name)
+
+    # Sort groups for consistent display
+    sorted_groups = sorted(model_groups.keys())
+
+    # Create expandable sections for each base model group
+    with st.expander("🔽 **Select Models by Base Model** (click to expand)", expanded=True):
+        st.caption("Select models to test. Models are grouped by their base model for easier selection.")
+
+        # Add "Select All" / "Deselect All" buttons at the top
+        col_all_1, col_all_2, col_all_3 = st.columns(3)
+        with col_all_1:
+            if st.button("✅ Select All Models", key="select_all_models"):
+                for model_name in MODEL_REGISTRY.keys():
+                    st.session_state[f"model_{model_name}"] = True
+                st.rerun()
+        with col_all_2:
+            if st.button("❌ Deselect All Models", key="deselect_all_models"):
+                for model_name in MODEL_REGISTRY.keys():
+                    st.session_state[f"model_{model_name}"] = False
+                st.rerun()
+
+        st.divider()
+
+        # Display models grouped by base model
+        for base_model in sorted_groups:
+            models_in_group = sorted(model_groups[base_model])
+
+            with st.expander(f"📦 **{base_model.upper()}** ({len(models_in_group)} models)", expanded=False):
+                # Group buttons for this base model
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"✅ Select All", key=f"select_all_{base_model}"):
+                        for model in models_in_group:
+                            st.session_state[f"model_{model}"] = True
+                        st.rerun()
+                with col2:
+                    if st.button(f"❌ Deselect All", key=f"deselect_all_{base_model}"):
+                        for model in models_in_group:
+                            st.session_state[f"model_{model}"] = False
+                        st.rerun()
+
+                st.markdown("---")
+
+                # Display checkboxes in columns (3 per row)
+                cols_per_row = 3
+                for i in range(0, len(models_in_group), cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for j, col in enumerate(cols):
+                        if i + j < len(models_in_group):
+                            model_name = models_in_group[i + j]
+                            meta = MODEL_REGISTRY[model_name]
+
+                            # Build label with badges
+                            label = model_name
+                            badges = []
+                            if meta.get("prompt_id") == "dynamic":
+                                badges.append("🆕")
+                            if meta.get("provider") in ["openai_ft"]:
+                                badges.append("🎯")
+                            if meta.get("provider") in ["openai_dynamic"]:
+                                badges.append("⏳")  # Waiting for fine-tune
+
+                            if badges:
+                                label = f"{' '.join(badges)} {label}"
+
+                            with col:
+                                # Initialize session state if not present
+                                key = f"model_{model_name}"
+                                if key not in st.session_state:
+                                    st.session_state[key] = False
+
+                                st.checkbox(
+                                    label,
+                                    value=st.session_state.get(key, False),
+                                    key=key,
+                                    help=f"Provider: {meta.get('provider')} | Prompt: {meta.get('prompt_id')}"
+                                )
+
+    # Collect selected models
+    model_labels = [
+        model_name for model_name in MODEL_REGISTRY.keys()
+        if st.session_state.get(f"model_{model_name}", False)
+    ]
+
+    if not model_labels:
+        st.warning("⚠️ Please select at least one model to continue")
+        st.stop()
+
+    st.success(f"✅ **{len(model_labels)} models selected:** {', '.join(model_labels[:5])}{f' and {len(model_labels)-5} more...' if len(model_labels) > 5 else ''}")
 
     # ── 3b · prompt variant (fine-tunes only) ───────────────────────
     prompt_overrides: Dict[str, str] = {}
@@ -370,75 +473,94 @@ def page_new_run():
 
     # ── 3d · Detector selection options (NEW) ──────────────────────────
     st.markdown("### 🔍 AI Detector Selection")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        use_gptzero = st.checkbox(
-            "🟠 GPTZero",
-            value=True,
-            help="Include GPTZero AI detection scoring",
-            key="use_gptzero"
-        )
-    
-    with col2:
-        use_sapling = st.checkbox(
-            "🟢 Sapling",
-            value=True,
-            help="Include Sapling AI detection scoring",
-            key="use_sapling"
-        )
-    
-    if not use_gptzero and not use_sapling:
-        st.error("⚠️ At least one detector must be selected!")
-        st.stop()
-    
-    # Show selected detectors info
-    selected_detectors = []
-    if use_gptzero:
-        selected_detectors.append("GPTZero")
-    if use_sapling:
-        selected_detectors.append("Sapling")
-    
-    st.info(f"📊 Selected detectors: {', '.join(selected_detectors)}")
-    
-    if not use_gptzero:
-        st.warning("⚠️ GPTZero results will be empty in the analysis")
-    if not use_sapling:
-        st.warning("⚠️ Sapling results will be empty in the analysis")
+
+    if preview_mode:
+        # Preview mode: force GPTZero only
+        use_gptzero = True
+        use_sapling = False
+        st.info("🔬 **Preview Mode:** Using GPTZero only for faster results")
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            use_gptzero = st.checkbox(
+                "🟠 GPTZero",
+                value=True,
+                help="Include GPTZero AI detection scoring",
+                key="use_gptzero"
+            )
+
+        with col2:
+            use_sapling = st.checkbox(
+                "🟢 Sapling",
+                value=True,
+                help="Include Sapling AI detection scoring",
+                key="use_sapling"
+            )
+
+        if not use_gptzero and not use_sapling:
+            st.error("⚠️ At least one detector must be selected!")
+            st.stop()
+
+        # Show selected detectors info
+        selected_detectors = []
+        if use_gptzero:
+            selected_detectors.append("GPTZero")
+        if use_sapling:
+            selected_detectors.append("Sapling")
+
+        st.info(f"📊 Selected detectors: {', '.join(selected_detectors)}")
+
+        if not use_gptzero:
+            st.warning("⚠️ GPTZero results will be empty in the analysis")
+        if not use_sapling:
+            st.warning("⚠️ Sapling results will be empty in the analysis")
 
     # ── 4 · iteration count ─────────────────────────────────────────
-    iterations = st.slider(
-        "Iterations per document",
-        1,
-        10,
-        value=1,
-        help="How many drafts each model should generate for every document",
-    )
+    if preview_mode:
+        # Preview mode: force 1 iteration
+        iterations = 1
+        st.info("🔬 **Preview Mode:** Fixed to 1 iteration per document")
+    else:
+        iterations = st.slider(
+            "Iterations per document",
+            1,
+            10,
+            value=1,
+            help="How many drafts each model should generate for every document",
+        )
 
     # ── 5 · workload preview ───────────────────────────────────────
     if model_labels:
         docs = _gather_docs(doc_counts, FOLDERS)
 
+        # Apply 30 document limit in preview mode
+        if preview_mode and len(docs) > 30:
+            st.warning(f"⚠️ **Preview Mode:** Document count reduced from {len(docs)} to 30 documents (preview mode limit)")
+            docs = docs[:30]
+
         # Count docs by type
         para_folder_docs = sum(1 for d in docs if d.parent.name.endswith("_paras"))
         regular_docs = len(docs) - para_folder_docs
-        
+
         # Calculate total drafts based on settings
         total_drafts = 0
-        
+
         # Para folder docs always get 1 mode (para mode)
         total_drafts += para_folder_docs * len(model_labels) * iterations
-        
+
         # Regular docs can have 1 or 2 modes depending on include_doc_mode
         if regular_docs > 0:
             modes_per_regular = 2 if include_doc_mode else 1
             total_drafts += regular_docs * len(model_labels) * iterations * modes_per_regular
 
         # Display workload preview
+        mode_label = "🔬 Preview Mode" if preview_mode else "📊 Workload preview"
+
         if para_folder_docs and regular_docs:
             modes_desc = "2 modes" if include_doc_mode else "1 mode"
             st.info(
-                f"📊 **Workload preview:** "
+                f"{mode_label}: "
                 f"{regular_docs} docs × {modes_desc} + "
                 f"{para_folder_docs} para docs × 1 mode × "
                 f"{len(model_labels)} models × {iterations} iterations "
@@ -447,13 +569,13 @@ def page_new_run():
         elif regular_docs:
             modes = 2 if include_doc_mode else 1
             st.info(
-                f"📊 **Workload preview:** {regular_docs} docs × "
+                f"{mode_label}: {regular_docs} docs × "
                 f"{len(model_labels)} models × {iterations} iterations × {modes} mode"
                 f"{'' if modes==1 else 's'} = **{total_drafts} drafts**"
             )
         else:
             st.info(
-                f"📊 **Workload preview:** {para_folder_docs} para docs × "
+                f"{mode_label}: {para_folder_docs} para docs × "
                 f"{len(model_labels)} models × {iterations} iterations × 1 mode "
                 f"= **{total_drafts} drafts**"
             )
@@ -490,8 +612,13 @@ def page_new_run():
             st.error("No .docx files found for the current settings")
             st.stop()
 
+        # Apply 30 document limit in preview mode
+        if preview_mode and len(docs) > 30:
+            print(f"[STREAMLIT] Preview mode: Limiting docs from {len(docs)} to 30", flush=True)
+            docs = docs[:30]
+
         print(f"[STREAMLIT] Found {len(docs)} documents", flush=True)
-        
+
         # Prepare job data
         total_docs = len(docs)
         
@@ -510,7 +637,8 @@ def page_new_run():
                     "total_docs": total_docs,
                     "include_doc_mode": include_doc_mode,
                     "use_gptzero": use_gptzero,
-                    "use_sapling": use_sapling
+                    "use_sapling": use_sapling,
+                    "preview_mode": preview_mode
                 }
                 
                 print(f"[STREAMLIT] Calling create_job API with data: {job_data}", flush=True)
