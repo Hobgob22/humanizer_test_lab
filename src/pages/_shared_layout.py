@@ -42,6 +42,7 @@ def setup_sidebar():
         st.info("""
         Use the navigation links above to switch between pages:
         - **New Run** - Create and start a new benchmark run
+        - **Preview Results** - Quick model screening (for preview mode runs)
         - **Benchmark Analysis** - View and analyze completed runs
         - **Document Browser** - Browse and analyze individual documents
         - **Job Status** - Monitor active and recent jobs

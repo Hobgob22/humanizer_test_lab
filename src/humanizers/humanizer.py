@@ -42,6 +42,19 @@ from ..prompts import (
     FINETUNED_DOC_SYSTEM_PROMPT2,
     FINETUNED_PARA_SYSTEM_PROMPT1,
     FINETUNED_PARA_SYSTEM_PROMPT2,
+    # Dynamic prompts
+    MINIMAL_DOC_SYSTEM_PROMPT,
+    MINIMAL_PARA_SYSTEM_PROMPT,
+    COMPACT_DOC_SYSTEM_PROMPT,
+    COMPACT_PARA_SYSTEM_PROMPT,
+    RICH_SYSTEM_PROMPT_STANDARD_DOC,
+    RICH_SYSTEM_PROMPT_STANDARD_PARA,
+    RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_DOC,
+    RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_PARA,
+    RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_DOC,
+    RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_PARA,
+    RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_DOC,
+    RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_PARA,
 )
 
 from ..rate_limiter import wait as _rate_wait
@@ -233,13 +246,15 @@ def _select_prompt(
     mode: Literal["doc", "para"],
     *,
     variant: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     """
     Resolve the system-prompt to use.
 
-    • Non-fine-tuned models → always default prompts  
-    • Fine-tuned models → allow user-selected “v1” or “v2”
+    • Non-fine-tuned models → always default prompts
+    • Fine-tuned models → allow user-selected "v1" or "v2"
                          (fallback to legacy prompt if none supplied)
+    • Dynamic models → use system_prompt parameter to select appropriate prompt
     """
     if prompt_id == "legacy-finetuned":
         return (
@@ -274,11 +289,93 @@ def _select_prompt(
             else FINETUNED_PARA_SYSTEM_PROMPT1
         )
 
+    if prompt_id == "dynamic":
+        # Select prompt based on system_prompt configuration
+        if system_prompt == "none":
+            # No system prompt
+            return ""
+        elif system_prompt == "minimal_prompt":
+            return MINIMAL_DOC_SYSTEM_PROMPT if mode == "doc" else MINIMAL_PARA_SYSTEM_PROMPT
+        elif system_prompt == "compact_prompt":
+            return COMPACT_DOC_SYSTEM_PROMPT if mode == "doc" else COMPACT_PARA_SYSTEM_PROMPT
+        elif system_prompt == "rich_prompt_standard":
+            return RICH_SYSTEM_PROMPT_STANDARD_DOC if mode == "doc" else RICH_SYSTEM_PROMPT_STANDARD_PARA
+        elif system_prompt == "rich_prompt_with_counter_examples":
+            return RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_DOC if mode == "doc" else RICH_SYSTEM_PROMPT_WITH_COUNTER_EXAMPLES_PARA
+        elif system_prompt == "rich_prompt_with_negative_examples":
+            return RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_DOC if mode == "doc" else RICH_SYSTEM_PROMPT_WITH_NEGATIVE_EXAMPLES_PARA
+        elif system_prompt == "rich_prompt_with_focus_areas":
+            return RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_DOC if mode == "doc" else RICH_SYSTEM_PROMPT_WITH_FOCUS_AREAS_PARA
+        else:
+            raise ValueError(f"Unknown system_prompt '{system_prompt}' for dynamic model")
+
     raise ValueError(f"Unknown prompt_id '{prompt_id}'")
 
 
 
 # ───────────────────────── public API ──────────────────────────
+def _build_user_prompt(
+    text: str,
+    scores_in_prompt: str | None = None,
+    initial_score: float | None = None,
+) -> str:
+    """
+    Build user prompt based on scores_in_prompt configuration.
+
+    • none: simple rewrite request
+    • both_raw: include raw AI score with target goal
+    • both_binned: include binned level (Low/Medium/High) with target goal
+    • ai_score_raw: include only raw AI score, no target
+    • ai_score_binned: include only binned level, no target
+    """
+    if not scores_in_prompt or scores_in_prompt == "none":
+        # Simple prompt without scores
+        return f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+
+    # Default score if not provided (for testing)
+    if initial_score is None:
+        initial_score = 0.5
+
+    # Determine level for binned prompts
+    if initial_score < 0.1:
+        level = "Low"
+    elif initial_score < 0.4:
+        level = "Medium"
+    else:
+        level = "High"
+
+    if scores_in_prompt == "both_raw":
+        return f"""This text's AI level is currently classified as **{initial_score:.2f}**.
+'''
+{text}
+'''
+Rewrite the text more natural to lower AI score to 0.01."""
+
+    elif scores_in_prompt == "both_binned":
+        return f"""This text AI score is {level}.
+'''
+{text}
+'''
+Rewrite it so the level becomes **Low**."""
+
+    elif scores_in_prompt == "ai_score_raw":
+        return f"""This text's AI level is currently classified as **{initial_score:.2f}**.
+'''
+{text}
+'''
+Rewrite it more natural so the text sounds human-like."""
+
+    elif scores_in_prompt == "ai_score_binned":
+        return f"""This text AI score is {level}.
+'''
+{text}
+'''
+Rewrite it more natural so the text sounds human-like."""
+
+    else:
+        raise ValueError(f"Unknown scores_in_prompt value: {scores_in_prompt}")
+
+
 def humanize(
     text: str,
     display_name: str,
@@ -291,11 +388,14 @@ def humanize(
     Extra keyword arguments are accepted and ignored so that
     upstream callers can pass contextual data (e.g. `log=…`)
     without breaking the interface.
-    
+
     All providers now properly use system prompts/instructions.
     """
     # Silently discard unrecognised kwargs (e.g. log callbacks)
     kwargs.pop("log", None)
+
+    # Extract initial_score if provided (for dynamic prompts)
+    initial_score = kwargs.pop("initial_score", None)
 
     meta = MODEL_REGISTRY[display_name]
     provider = meta["provider"]
@@ -303,23 +403,41 @@ def humanize(
     prompt_id = meta["prompt_id"]
 
     variant = PROMPT_OVERRIDES.get(display_name)  # may be None
-    system_prompt = _select_prompt(prompt_id, mode, variant=variant)
-    user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+
+    # Get system_prompt config for dynamic models
+    system_prompt_type = meta.get("system_prompt")
+    scores_in_prompt = meta.get("scores_in_prompt")
+
+    # Select system prompt
+    system_prompt = _select_prompt(prompt_id, mode, variant=variant, system_prompt=system_prompt_type)
+
+    # Build user prompt (dynamic models may include scores)
+    if prompt_id == "dynamic":
+        user_prompt = _build_user_prompt(text, scores_in_prompt, initial_score)
+    else:
+        user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+
     if provider == "openai":
         if not _openai_std:
             raise ValueError("OpenAI API key not configured")
         return _openai_call(user_prompt, model_id, _openai_std, system_prompt)
-    
+
     if provider == "openai_ft":
         if not _openai_ft:
             raise ValueError("Humanizer OpenAI API key not configured")
         return _openai_call(user_prompt, model_id, _openai_ft, system_prompt)
-    
+
+    if provider == "openai_dynamic":
+        # Use base model with dynamic prompts
+        if not _openai_std:
+            raise ValueError("OpenAI API key not configured")
+        return _openai_call(user_prompt, model_id, _openai_std, system_prompt)
+
     if provider == "claude":
         if not _claude_client:
             raise ValueError("Claude API key not configured")
         return _claude_call(user_prompt, model_id, system_prompt)
-    
+
     if provider == "gemini":
         if not _gemini_client:
             raise ValueError("Gemini API key not configured")
