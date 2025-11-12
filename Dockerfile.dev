@@ -1,63 +1,34 @@
-# Dockerfile.dev – Development image with hot‑reload support and proper PYTHONPATH
-# -----------------------------------------------------------------------------
-# This image is optimised for an inner‑loop workflow:
-#   • packages are layer‑cached (requirements + requirements‑dev)
-#   • source code is volume‑mounted by docker‑compose for instant reloads
-#   • PYTHONPATH points at /app so absolute `import src.…` works everywhere
-# -----------------------------------------------------------------------------
+# Dockerfile.dev – Development image with hot reload
 
-    FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
-    # ─────────────────────────── system tooling ────────────────────────────
-    RUN apt-get update \
-        && apt-get install -y --no-install-recommends \
-               build-essential \
-               curl \
-        && rm -rf /var/lib/apt/lists/*
-    
-    # ────────────────────────── work directory ─────────────────────────────
-    WORKDIR /app
-    
-    # ───────────────────── dependency installation  ────────────────────────
-    # Copy in both lock/requirement files first to leverage Docker layer cache
-    COPY requirements.txt requirements-dev.txt ./
-    
-    # Base runtime requirements
-    RUN pip install --no-cache-dir -r requirements.txt
-    
-    # Extra tools useful only during development (watch‑reload, pytest, linters…)
-    RUN pip install --no-cache-dir -r requirements-dev.txt \
-        && pip cache purge
-    
-    # ─────────────────────────── app scaffolding ───────────────────────────
-    # We *do not* COPY the repo’s source tree here – docker‑compose mounts it as
-    # a read‑only volume for ultra‑fast reloads.  Retaining this COPY commented
-    # serves as documentation and an easy switch for single‑container use.
-    # COPY . .
-    
-    # Ensure writable directories exist when the volume mount is missing
-    RUN mkdir -p cache logs results data/ai_texts data/human_texts data/ai_paras data/human_paras
-    
-    # ─────────────────────────── env variables ─────────────────────────────
-    ENV PYTHONUNBUFFERED=1 \
-        PYTHONPATH=/app:$PYTHONPATH \
-        STREAMLIT_SERVER_FILE_WATCHER_TYPE=watchdog \
-        STREAMLIT_SERVER_RUN_ON_SAVE=true \
-        STREAMLIT_SERVER_ENABLE_DEV_MODE=true
-    
-    # ─────────────────────────── ports & healthcheck ───────────────────────
-    EXPOSE 8501
-    
-    HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-        CMD curl -f http://localhost:8501/_stcore/health || exit 1
-    
-    # ───────────────────────────── entrypoint ──────────────────────────────
-    CMD [ \
-      "streamlit", "run", "src/ui.py", \
-      "--server.port=8501", \
-      "--server.address=0.0.0.0", \
-      "--server.fileWatcherType=watchdog", \
-      "--server.enableCORS=false", \
-      "--server.enableXsrfProtection=false" \
-    ]
-    
+# Install system dependencies including Node.js
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        git \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install frontend dependencies
+COPY frontend/package*.json frontend/
+RUN cd frontend && npm ci
+
+# Copy all source files
+COPY . .
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app:${PYTHONPATH}
+
+EXPOSE 8000 5173
+
+# In development, run both backend and frontend
+CMD ["sh", "-c", "python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload & cd frontend && npm run dev -- --host 0.0.0.0"]

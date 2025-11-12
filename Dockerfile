@@ -1,9 +1,25 @@
-# Dockerfile – Production image (optimized)
+# Dockerfile – Production image with React + FastAPI
 
 ############################
-# 1. Builder stage
+# 1. Frontend Builder Stage
 ############################
-FROM python:3.11-slim AS builder
+FROM node:22-slim AS frontend-builder
+
+WORKDIR /app/frontend
+
+# Copy frontend package files
+COPY frontend/package*.json ./
+RUN npm ci
+
+# Copy frontend source and build
+COPY frontend/ ./
+RUN npm run build
+
+
+############################
+# 2. Python Builder Stage
+############################
+FROM python:3.11-slim AS python-builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,7 +33,7 @@ RUN pip install --user --no-cache-dir -r requirements.txt
 
 
 ############################
-# 2. Final runtime stage
+# 3. Final Runtime Stage
 ############################
 FROM python:3.11-slim
 
@@ -32,11 +48,15 @@ RUN useradd -m -u 1000 appuser
 # Workdir for the application
 WORKDIR /app
 
-# Copy Python dependencies from builder stage
-COPY --from=builder /root/.local /home/appuser/.local
+# Copy Python dependencies from python-builder stage
+COPY --from=python-builder /root/.local /home/appuser/.local
+
+# Copy React build from frontend-builder stage
+COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Copy application source (preserve ownership)
-COPY --chown=appuser:appuser . .
+COPY --chown=appuser:appuser src /app/src
+COPY --chown=appuser:appuser .env* /app/
 
 # Create writable directories and adjust ownership
 RUN mkdir -p cache logs results \
@@ -46,26 +66,22 @@ RUN mkdir -p cache logs results \
 # Switch to non-root user
 USER appuser
 
-# PATH and PYTHONPATH so “src” package is always importable
+# PATH and PYTHONPATH so "src" package is always importable
 ENV PATH=/home/appuser/.local/bin:$PATH
 ENV PYTHONPATH=/app:${PYTHONPATH}
 
 # Production environment variables
 ENV PYTHONUNBUFFERED=1
-ENV STREAMLIT_SERVER_HEADLESS=true
-ENV STREAMLIT_SERVER_ENABLE_CORS=false
-ENV STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=true
-ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-# Expose Streamlit port
-EXPOSE 8501
+# Expose FastAPI port
+EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Launch Streamlit
-CMD ["streamlit", "run", "src/ui.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.maxUploadSize=200"]
+# Launch FastAPI server
+CMD ["python", "-m", "uvicorn", "src.api.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--log-level", "info"]
