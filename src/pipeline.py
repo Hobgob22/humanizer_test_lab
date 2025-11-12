@@ -45,12 +45,17 @@ from .config import (
     SAPLING_MAX_CONCURRENT,
     OPENAI_API_KEY, HUMANIZER_OPENAI_API_KEY,
     MIN_WORDS_PARAGRAPH,
+    IS_DEVELOPMENT,
 )
 from .detectors import gptzero, sapling
 from .docx_utils import extract_paragraphs_with_type
 from .evaluation.quality import quality
 from .humanizers.humanizer import humanize, _select_prompt
 from .models import MODEL_REGISTRY
+from .paths import RESULTS
+
+import json
+from datetime import datetime
 
 # Derive default list of models from registry display-names
 DEFAULT_HUMANIZER_MODELS = list(MODEL_REGISTRY)
@@ -103,6 +108,70 @@ def _stage(message: str, cb: Callable[[str], None] | None = None):
         except TypeError:
             # Fallback to single parameter call
             cb(formatted_message)
+
+def _log_paragraph_mismatch(
+    document_name: str,
+    paragraph_index: int,
+    ai_score_doc: float,
+    ai_score_para: float,
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    model_output: str,
+    original_paragraph: str,
+    received_paragraphs: List[str]
+):
+    """
+    Log paragraph mismatches to a JSON file for debugging (development mode only).
+
+    Args:
+        document_name: Name of the document being processed
+        paragraph_index: Index of the paragraph (1-based)
+        ai_score_doc: AI detection score for the full document
+        ai_score_para: AI detection score for this paragraph
+        model_name: Name of the humanization model
+        system_prompt: System prompt used for humanization
+        user_prompt: User prompt sent to the model
+        model_output: Raw output from the model
+        original_paragraph: Original paragraph text
+        received_paragraphs: List of paragraphs received from model
+    """
+    if not IS_DEVELOPMENT:
+        return  # Only log in development mode
+
+    try:
+        # Create logs directory if it doesn't exist
+        logs_dir = RESULTS / "dev_logs"
+        logs_dir.mkdir(exist_ok=True, parents=True)
+
+        # Create log entry
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "document_name": document_name,
+            "paragraph_index": paragraph_index,
+            "ai_scores": {
+                "document": ai_score_doc,
+                "paragraph": ai_score_para
+            },
+            "model": model_name,
+            "prompts": {
+                "system": system_prompt,
+                "user": user_prompt
+            },
+            "original_paragraph": original_paragraph,
+            "model_output": model_output,
+            "received_paragraphs": received_paragraphs,
+            "mismatch_reason": f"Sent 1 paragraph, received {len(received_paragraphs)} paragraphs"
+        }
+
+        # Append to JSON Lines file (one JSON object per line)
+        log_file = logs_dir / "paragraph_mismatches.jsonl"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+    except Exception as e:
+        # Don't fail the pipeline if logging fails
+        print(f"Warning: Failed to log paragraph mismatch: {e}", flush=True)
 
 # Global pool for Gemini calls (caps parallelism)
 _GEMINI_POOL = ThreadPoolExecutor(max_workers=GEMINI_MAX_WORKERS)
@@ -416,7 +485,38 @@ def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> Tuple[L
                 
                 # Detect mismatch: sent 1 paragraph, received N paragraphs
                 is_mismatch = len(received_paras) != 1
-                
+
+                # Log paragraph mismatch in development mode
+                if is_mismatch and IS_DEVELOPMENT:
+                    try:
+                        # Get model metadata to extract prompts
+                        meta = MODEL_REGISTRY.get(model, {})
+                        prompt_id = meta.get("prompt_id", "default")
+                        system_prompt_type = meta.get("system_prompt")
+
+                        # Build system prompt (same logic as humanizer)
+                        system_prompt = _select_prompt(prompt_id, "para", variant=None, system_prompt=system_prompt_type)
+
+                        # Build user prompt (standard rewriting prompt for paragraph mode)
+                        user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{original_para}"
+
+                        # Log the mismatch with AI scores (if available from context)
+                        _log_paragraph_mismatch(
+                            document_name="[processing]",  # Will be set by caller if available
+                            paragraph_index=idx + 1,
+                            ai_score_doc=0.0,  # Not available in this context
+                            ai_score_para=0.0,  # Not available in this context
+                            model_name=model,
+                            system_prompt=system_prompt or "",
+                            user_prompt=user_prompt,
+                            model_output=humanized_text,
+                            original_paragraph=original_para,
+                            received_paragraphs=received_paras
+                        )
+                    except Exception as log_error:
+                        # Don't fail the pipeline if logging fails
+                        print(f"Warning: Failed to log paragraph mismatch: {log_error}", flush=True)
+
                 # The text used for document assembly and quality evaluation is the same
                 assembly_text = "\n\n".join(received_paras) if received_paras else ""
 

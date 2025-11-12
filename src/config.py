@@ -101,3 +101,10 @@ API_BASE_URL         = os.getenv("API_BASE_URL", f"http://localhost:{API_PORT}")
 WS_URL                = os.getenv("WS_URL", f"ws://localhost:{API_PORT}")
 CACHE_TTL_STATISTICS  = int(os.getenv("CACHE_TTL_STATISTICS", 1800))
 CACHE_TTL_RUNS        = int(os.getenv("CACHE_TTL_RUNS", 3600))
+
+# ────────────────────────────────────────────────────────────────
+# 8 · DEVELOPMENT MODE (for detailed logging)
+# ────────────────────────────────────────────────────────────────
+# Enable development mode for JSON logging of paragraph mismatches
+# Set DEVELOPMENT_MODE=true in .env for local development
+IS_DEVELOPMENT = os.getenv("DEVELOPMENT_MODE", "false").lower() in ("true", "1", "yes")
