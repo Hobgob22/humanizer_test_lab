@@ -93,7 +93,9 @@ export function BenchmarkAnalysis() {
             const status = await api.getStatisticsStatus(response.task_id);
             if (status.status === "completed") {
               clearInterval(pollInterval);
-              setStatistics(status.result);
+              // Transform nested structure to flat models structure
+              const transformed = transformStatistics(status.result);
+              setStatistics(transformed);
               setLoadingStats(false);
             } else if (status.status === "failed") {
               clearInterval(pollInterval);
@@ -107,13 +109,87 @@ export function BenchmarkAnalysis() {
           }
         }, 1000);
       } else {
-        setStatistics(response.result);
+        const transformed = transformStatistics(response.result);
+        setStatistics(transformed);
         setLoadingStats(false);
       }
     } catch (err) {
       alert(`Failed to compute statistics: ${err.message}`);
       setLoadingStats(false);
     }
+  };
+
+  // Transform backend structure {folder: {model: {mode: {...}}}} to frontend structure {models: {model: {...}}}
+  const transformStatistics = (backendStats) => {
+    if (!backendStats) return { models: {} };
+
+    const models = {};
+
+    // Aggregate across folders and modes
+    Object.entries(backendStats).forEach(([folder, folderModels]) => {
+      Object.entries(folderModels).forEach(([model, modes]) => {
+        if (!models[model]) {
+          models[model] = {
+            ai_scores: [],
+            zeroshot_successes: [],
+            quality_scores: [],
+            folders: [],
+          };
+        }
+
+        // Aggregate data from all modes
+        Object.entries(modes).forEach(([mode, stats]) => {
+          // Collect AI scores
+          if (stats.after && stats.after.gptzero !== null && !isNaN(stats.after.gptzero)) {
+            models[model].ai_scores.push(stats.after.gptzero);
+          }
+
+          // Collect zero-shot success rates
+          if (stats.zero_shot_success && stats.zero_shot_success.gptzero !== null) {
+            models[model].zeroshot_successes.push(stats.zero_shot_success.gptzero / 100);
+          }
+
+          // Collect quality scores
+          if (stats.grammar_score !== null && !isNaN(stats.grammar_score)) {
+            models[model].quality_scores.push(stats.grammar_score);
+          }
+
+          models[model].folders.push(`${folder}/${mode}`);
+        });
+      });
+    });
+
+    // Calculate aggregated statistics
+    const result = { models: {} };
+    Object.entries(models).forEach(([model, data]) => {
+      if (data.ai_scores.length === 0) return;
+
+      const sorted = [...data.ai_scores].sort((a, b) => a - b);
+      result.models[model] = {
+        mean_ai_score: data.ai_scores.reduce((a, b) => a + b, 0) / data.ai_scores.length,
+        median_ai_score: sorted[Math.floor(sorted.length / 2)],
+        std_ai_score: Math.sqrt(
+          data.ai_scores.reduce((sum, val) => {
+            const mean = data.ai_scores.reduce((a, b) => a + b, 0) / data.ai_scores.length;
+            return sum + Math.pow(val - mean, 2);
+          }, 0) / data.ai_scores.length
+        ),
+        p25_ai_score: sorted[Math.floor(sorted.length * 0.25)],
+        p75_ai_score: sorted[Math.floor(sorted.length * 0.75)],
+        zeroshot_success:
+          data.zeroshot_successes.length > 0
+            ? data.zeroshot_successes.reduce((a, b) => a + b, 0) / data.zeroshot_successes.length
+            : 0,
+        avg_quality:
+          data.quality_scores.length > 0
+            ? data.quality_scores.reduce((a, b) => a + b, 0) / data.quality_scores.length
+            : null,
+        sample_count: data.ai_scores.length,
+        folders: data.folders,
+      };
+    });
+
+    return result;
   };
 
   const handleDownloadData = () => {
@@ -382,20 +458,32 @@ function RunDataDisplay({ runName, data }) {
 
     const rows = [];
     data.docs.forEach((doc) => {
-      if (doc.models) {
-        Object.entries(doc.models).forEach(([model, modelData]) => {
-          if (modelData.iterations) {
-            modelData.iterations.forEach((iter, idx) => {
-              rows.push({
-                doc_name: doc.doc_name,
-                folder: doc.folder,
-                model,
-                iteration: idx + 1,
-                ai_score: iter.para_ai_score || iter.doc_ai_score || 0,
-                quality_score: iter.para_quality_score || iter.doc_quality_score,
-              });
-            });
+      // Handle the actual data structure: doc.runs array
+      if (doc.runs && Array.isArray(doc.runs)) {
+        doc.runs.forEach((run) => {
+          const model = run.model || "unknown";
+          const iter = run.iter || 0;
+
+          // Get AI score from scores_after
+          let ai_score = 0;
+          if (run.scores_after && run.scores_after.group_doc) {
+            ai_score = run.scores_after.group_doc.gptzero || 0;
           }
+
+          // Get quality score from flag_counts
+          let quality_score = null;
+          if (run.flag_counts) {
+            quality_score = run.flag_counts.grammar_score;
+          }
+
+          rows.push({
+            doc_name: doc.document,
+            folder: doc.folder,
+            model,
+            iteration: iter + 1,
+            ai_score,
+            quality_score,
+          });
         });
       }
     });

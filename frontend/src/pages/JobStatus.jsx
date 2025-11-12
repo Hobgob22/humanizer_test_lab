@@ -39,38 +39,54 @@ export function JobStatus() {
     loadJobs();
 
     // Set up WebSocket for real-time updates
-    try {
-      const ws = api.createWebSocket();
-      wsRef.current = ws;
+    let reconnectTimeout;
+    const connectWebSocket = () => {
+      try {
+        const ws = api.createWebSocket();
+        wsRef.current = ws;
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === "job_update") {
-          setJobs((prevJobs) => {
-            const index = prevJobs.findIndex((j) => j.job_id === data.job_id);
-            if (index >= 0) {
-              const newJobs = [...prevJobs];
-              newJobs[index] = { ...newJobs[index], ...data.data };
-              return newJobs;
-            } else {
-              return [data.data, ...prevJobs];
-            }
-          });
-        }
-      };
+        ws.onopen = () => {
+          console.log("WebSocket connected");
+        };
 
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-      };
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.type === "job_update") {
+            setJobs((prevJobs) => {
+              const index = prevJobs.findIndex((j) => j.job_id === data.job_id);
+              if (index >= 0) {
+                const newJobs = [...prevJobs];
+                newJobs[index] = { ...newJobs[index], ...data.data };
+                return newJobs;
+              } else {
+                return [data.data, ...prevJobs];
+              }
+            });
+          }
+        };
 
-      ws.onclose = () => {
-        console.log("WebSocket connection closed");
-      };
-    } catch (err) {
-      console.error("Failed to create WebSocket:", err);
-    }
+        ws.onerror = (error) => {
+          console.warn("WebSocket error (will retry):", error);
+        };
+
+        ws.onclose = () => {
+          console.log("WebSocket connection closed, will reconnect in 5s");
+          // Reconnect after 5 seconds
+          reconnectTimeout = setTimeout(() => {
+            connectWebSocket();
+          }, 5000);
+        };
+      } catch (err) {
+        console.error("Failed to create WebSocket:", err);
+      }
+    };
+
+    connectWebSocket();
 
     return () => {
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
       if (wsRef.current) {
         wsRef.current.close();
       }
