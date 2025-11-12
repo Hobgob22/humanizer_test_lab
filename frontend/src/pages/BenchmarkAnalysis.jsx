@@ -1,39 +1,36 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { Select } from "../components/ui/Select";
 import { Badge } from "../components/ui/Badge";
-import { Alert, AlertDescription, AlertTitle, AlertIcons } from "../components/ui/Alert";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/Alert";
 import { formatNumber, formatPercent, downloadJSON } from "../lib/utils";
-import { Loader2, Download, BarChart3, TrendingUp, TrendingDown } from "lucide-react";
 import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  getFilteredRowModel,
-  flexRender,
-} from "@tanstack/react-table";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
+  createModelComparisonTable,
+  computeModelPerformance,
+  buildExtendedStats,
+  formatMetric,
+  formatPct,
+  getDeltaColor,
+  getZeroShotColor,
+  getQualityColor,
+  getGrammarColor,
+  getMeaningLevelColor,
+  getMissingInfoColor,
+  getCitationColor,
+  getLengthDeviationColor,
+} from "../lib/statistics";
+import { Loader2, Download, BarChart3, Info, ChevronDown, ChevronUp } from "lucide-react";
 
 export function BenchmarkAnalysis() {
   const [runs, setRuns] = useState([]);
   const [selectedRuns, setSelectedRuns] = useState([]);
-  const [runData, setRunData] = useState({});
   const [statistics, setStatistics] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingStats, setLoadingStats] = useState(false);
   const [error, setError] = useState(null);
   const [mergeRuns, setMergeRuns] = useState(false);
+  const [activeTab, setActiveTab] = useState("folder");
 
   useEffect(() => {
     loadRuns();
@@ -52,28 +49,11 @@ export function BenchmarkAnalysis() {
     }
   };
 
-  const loadRunData = async (runName) => {
-    if (runData[runName]) return; // Already loaded
-
-    try {
-      const data = await api.loadRun(runName);
-      setRunData((prev) => ({ ...prev, [runName]: data }));
-    } catch (err) {
-      alert(`Failed to load run ${runName}: ${err.message}`);
-    }
-  };
-
-  const handleRunSelection = async (runName) => {
+  const handleRunSelection = (runName) => {
     const newSelection = selectedRuns.includes(runName)
       ? selectedRuns.filter((r) => r !== runName)
       : [...selectedRuns, runName];
-
     setSelectedRuns(newSelection);
-
-    // Load run data if selecting
-    if (!selectedRuns.includes(runName)) {
-      await loadRunData(runName);
-    }
   };
 
   const computeStatistics = async () => {
@@ -93,9 +73,8 @@ export function BenchmarkAnalysis() {
             const status = await api.getStatisticsStatus(response.task_id);
             if (status.status === "completed") {
               clearInterval(pollInterval);
-              // Transform nested structure to flat models structure
-              const transformed = transformStatistics(status.result);
-              setStatistics(transformed);
+              // Keep the nested structure for display
+              setStatistics(status.result);
               setLoadingStats(false);
             } else if (status.status === "failed") {
               clearInterval(pollInterval);
@@ -109,8 +88,7 @@ export function BenchmarkAnalysis() {
           }
         }, 1000);
       } else {
-        const transformed = transformStatistics(response.result);
-        setStatistics(transformed);
+        setStatistics(response.result);
         setLoadingStats(false);
       }
     } catch (err) {
@@ -119,84 +97,13 @@ export function BenchmarkAnalysis() {
     }
   };
 
-  // Transform backend structure {folder: {model: {mode: {...}}}} to frontend structure {models: {model: {...}}}
-  const transformStatistics = (backendStats) => {
-    if (!backendStats) return { models: {} };
-
-    const models = {};
-
-    // Aggregate across folders and modes
-    Object.entries(backendStats).forEach(([folder, folderModels]) => {
-      Object.entries(folderModels).forEach(([model, modes]) => {
-        if (!models[model]) {
-          models[model] = {
-            ai_scores: [],
-            zeroshot_successes: [],
-            quality_scores: [],
-            folders: [],
-          };
-        }
-
-        // Aggregate data from all modes
-        Object.entries(modes).forEach(([mode, stats]) => {
-          // Collect AI scores
-          if (stats.after && stats.after.gptzero !== null && !isNaN(stats.after.gptzero)) {
-            models[model].ai_scores.push(stats.after.gptzero);
-          }
-
-          // Collect zero-shot success rates
-          if (stats.zero_shot_success && stats.zero_shot_success.gptzero !== null) {
-            models[model].zeroshot_successes.push(stats.zero_shot_success.gptzero / 100);
-          }
-
-          // Collect quality scores
-          if (stats.grammar_score !== null && !isNaN(stats.grammar_score)) {
-            models[model].quality_scores.push(stats.grammar_score);
-          }
-
-          models[model].folders.push(`${folder}/${mode}`);
-        });
-      });
-    });
-
-    // Calculate aggregated statistics
-    const result = { models: {} };
-    Object.entries(models).forEach(([model, data]) => {
-      if (data.ai_scores.length === 0) return;
-
-      const sorted = [...data.ai_scores].sort((a, b) => a - b);
-      result.models[model] = {
-        mean_ai_score: data.ai_scores.reduce((a, b) => a + b, 0) / data.ai_scores.length,
-        median_ai_score: sorted[Math.floor(sorted.length / 2)],
-        std_ai_score: Math.sqrt(
-          data.ai_scores.reduce((sum, val) => {
-            const mean = data.ai_scores.reduce((a, b) => a + b, 0) / data.ai_scores.length;
-            return sum + Math.pow(val - mean, 2);
-          }, 0) / data.ai_scores.length
-        ),
-        p25_ai_score: sorted[Math.floor(sorted.length * 0.25)],
-        p75_ai_score: sorted[Math.floor(sorted.length * 0.75)],
-        zeroshot_success:
-          data.zeroshot_successes.length > 0
-            ? data.zeroshot_successes.reduce((a, b) => a + b, 0) / data.zeroshot_successes.length
-            : 0,
-        avg_quality:
-          data.quality_scores.length > 0
-            ? data.quality_scores.reduce((a, b) => a + b, 0) / data.quality_scores.length
-            : null,
-        sample_count: data.ai_scores.length,
-        folders: data.folders,
-      };
-    });
-
-    return result;
-  };
-
   const handleDownloadData = () => {
-    const exportData = selectedRuns.map((runName) => ({
-      run_name: runName,
-      data: runData[runName],
-    }));
+    const exportData = {
+      runs: selectedRuns,
+      merge: mergeRuns,
+      statistics,
+      timestamp: Date.now(),
+    };
     downloadJSON(exportData, `benchmark_export_${Date.now()}.json`);
   };
 
@@ -207,6 +114,14 @@ export function BenchmarkAnalysis() {
       </div>
     );
   }
+
+  const tabs = [
+    { id: "folder", label: "📊 By Folder & Model" },
+    { id: "performance", label: "📈 Model Performance" },
+    { id: "extended", label: "📐 Extended Stats" },
+    { id: "folderSummary", label: "📁 Folder Summary" },
+    { id: "distributions", label: "📊 Distributions" },
+  ];
 
   return (
     <div className="space-y-6">
@@ -292,10 +207,12 @@ export function BenchmarkAnalysis() {
                   </>
                 )}
               </Button>
-              <Button variant="outline" onClick={handleDownloadData}>
-                <Download className="h-4 w-4 mr-2" />
-                Download Data
-              </Button>
+              {statistics && (
+                <Button variant="outline" onClick={handleDownloadData}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download Data
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -303,268 +220,415 @@ export function BenchmarkAnalysis() {
 
       {/* Statistics Results */}
       {statistics && (
-        <StatisticsDisplay statistics={statistics} selectedRuns={selectedRuns} />
-      )}
+        <Card>
+          <CardHeader>
+            <CardTitle>Statistical Analysis</CardTitle>
+            <CardDescription>
+              Analysis of {selectedRuns.length} run{selectedRuns.length > 1 ? "s" : ""}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* Tab Navigation */}
+            <div className="flex gap-2 border-b mb-6 overflow-x-auto">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+                    activeTab === tab.id
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-      {/* Run Data Display */}
-      {selectedRuns.length > 0 && !statistics && (
-        <div className="space-y-6">
-          {selectedRuns.map((runName) => (
-            runData[runName] && (
-              <RunDataDisplay key={runName} runName={runName} data={runData[runName]} />
-            )
-          ))}
-        </div>
+            {/* Tab Content */}
+            {activeTab === "folder" && <FolderModelView stats={statistics} />}
+            {activeTab === "performance" && <ModelPerformanceView stats={statistics} />}
+            {activeTab === "extended" && <ExtendedStatsView stats={statistics} />}
+            {activeTab === "folderSummary" && <FolderSummaryView stats={statistics} />}
+            {activeTab === "distributions" && <DistributionsView stats={statistics} />}
+          </CardContent>
+        </Card>
       )}
     </div>
   );
 }
 
-function StatisticsDisplay({ statistics, selectedRuns }) {
-  if (!statistics || !statistics.models) return null;
+// ====== Tab Components ======
 
-  const chartData = Object.entries(statistics.models).map(([model, stats]) => ({
-    model: model.length > 15 ? model.substring(0, 15) + "..." : model,
-    mean: stats.mean_ai_score || 0,
-    median: stats.median_ai_score || 0,
-    zeroshot: (stats.zeroshot_success || 0) * 100,
-  }));
+function FolderModelView({ stats }) {
+  const [expandedFolders, setExpandedFolders] = useState(["ai_texts"]);
+
+  const toggleFolder = (folder) => {
+    setExpandedFolders((prev) =>
+      prev.includes(folder) ? prev.filter((f) => f !== folder) : [...prev, folder]
+    );
+  };
+
+  const folderOrder = ["ai_texts", "human_texts", "ai_paras", "human_paras"];
+  const availableFolders = folderOrder.filter((f) => stats[f]);
+  const otherFolders = Object.keys(stats).filter((f) => !folderOrder.includes(f));
+  const allFolders = [...availableFolders, ...otherFolders];
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Statistical Summary</CardTitle>
-          <CardDescription>
-            Analysis of {selectedRuns.length} run{selectedRuns.length > 1 ? "s" : ""}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
-            {/* Chart */}
-            <div>
-              <h3 className="text-sm font-medium mb-4">AI Score Distribution by Model</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="model" angle={-45} textAnchor="end" height={100} />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="mean" fill="#3b82f6" name="Mean AI Score" />
-                  <Bar dataKey="median" fill="#10b981" name="Median AI Score" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-md">
+        <h3 className="font-medium mb-2 flex items-center gap-2">
+          <Info className="h-4 w-4" />
+          Understanding the metrics
+        </h3>
+        <div className="text-sm space-y-1 text-muted-foreground">
+          <p>
+            <strong>Δ GZ / Δ SP</strong> – change in AI-detection score (negative = better)
+          </p>
+          <p>
+            <strong>Zero-shot</strong> – % drafts ≤ 10% on detector
+          </p>
+          <p>
+            <strong>Quality %</strong> – average of all quality checks
+          </p>
+          <p>
+            <strong>Grammar Lv</strong> – average grammatical correctness (0-10 scale)
+          </p>
+          <p>
+            <strong>Within 10 / 20 words</strong> – word-count distance from original
+          </p>
+        </div>
+      </div>
 
-            {/* Zero-shot Success Chart */}
-            <div>
-              <h3 className="text-sm font-medium mb-4">Zero-shot Success Rate (%)</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="model" angle={-45} textAnchor="end" height={100} />
-                  <YAxis domain={[0, 100]} />
-                  <Tooltip />
-                  <Bar dataKey="zeroshot" fill="#8b5cf6" name="Zero-shot Success %" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+      {allFolders.map((folder) => (
+        <div key={folder} className="border rounded-md">
+          <button
+            onClick={() => toggleFolder(folder)}
+            className="w-full px-4 py-3 flex items-center justify-between bg-muted/50 hover:bg-muted transition-colors"
+          >
+            <span className="font-medium">📁 {folder.replace("_", " ").toUpperCase()}</span>
+            {expandedFolders.includes(folder) ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
 
-            {/* Statistics Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left p-2">Model</th>
-                    <th className="text-right p-2">Mean</th>
-                    <th className="text-right p-2">Median</th>
-                    <th className="text-right p-2">Std Dev</th>
-                    <th className="text-right p-2">P25</th>
-                    <th className="text-right p-2">P75</th>
-                    <th className="text-right p-2">Zero-shot %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(statistics.models).map(([model, stats]) => (
-                    <tr key={model} className="border-b hover:bg-muted/50">
-                      <td className="p-2 font-medium">{model}</td>
-                      <td className="text-right p-2">{formatNumber(stats.mean_ai_score)}</td>
-                      <td className="text-right p-2">{formatNumber(stats.median_ai_score)}</td>
-                      <td className="text-right p-2">{formatNumber(stats.std_ai_score)}</td>
-                      <td className="text-right p-2">{formatNumber(stats.p25_ai_score)}</td>
-                      <td className="text-right p-2">{formatNumber(stats.p75_ai_score)}</td>
-                      <td className="text-right p-2">{formatPercent(stats.zeroshot_success, 1)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {expandedFolders.includes(folder) && (
+            <div className="p-4">
+              <DetailedStatsTable stats={stats} folder={folder} />
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
 
-function RunDataDisplay({ runName, data }) {
-  const [sorting, setSorting] = useState([]);
-  const [globalFilter, setGlobalFilter] = useState("");
+function DetailedStatsTable({ stats, folder }) {
+  const rows = createModelComparisonTable(stats, folder);
 
-  const columns = useMemo(
-    () => [
-      {
-        accessorKey: "doc_name",
-        header: "Document",
-        cell: (info) => <span className="font-medium">{info.getValue()}</span>,
-      },
-      {
-        accessorKey: "folder",
-        header: "Folder",
-        cell: (info) => <Badge variant="outline">{info.getValue()}</Badge>,
-      },
-      {
-        accessorKey: "model",
-        header: "Model",
-      },
-      {
-        accessorKey: "iteration",
-        header: "Iter",
-        cell: (info) => <span className="text-center">{info.getValue()}</span>,
-      },
-      {
-        accessorKey: "ai_score",
-        header: "AI Score",
-        cell: (info) => {
-          const value = info.getValue();
-          const color = value < 0.1 ? "text-green-600" : value < 0.3 ? "text-yellow-600" : "text-red-600";
-          return <span className={color}>{formatNumber(value, 3)}</span>;
-        },
-      },
-      {
-        accessorKey: "quality_score",
-        header: "Quality",
-        cell: (info) => {
-          const value = info.getValue();
-          return value !== null ? formatNumber(value, 1) : "N/A";
-        },
-      },
-    ],
-    []
+  if (rows.length === 0) {
+    return <p className="text-center text-muted-foreground py-8">No data for this folder</p>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left p-2 sticky left-0 bg-background z-10">Model</th>
+            <th className="text-center p-2">Mode</th>
+            <th className="text-center p-2">Drafts</th>
+            <th className="text-center p-2">Paras</th>
+            <th className="text-right p-2">Base GZ</th>
+            <th className="text-right p-2">After GZ</th>
+            <th className="text-right p-2">Δ GZ</th>
+            <th className="text-right p-2">ZS GZ %</th>
+            <th className="text-right p-2">Δ SP</th>
+            <th className="text-right p-2">ZS SP %</th>
+            <th className="text-right p-2">Quality %</th>
+            <th className="text-right p-2">Grammar</th>
+            <th className="text-right p-2">Meaning</th>
+            <th className="text-right p-2">Missing</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, idx) => (
+            <tr key={idx} className="border-b hover:bg-muted/50">
+              <td className="p-2 font-medium sticky left-0 bg-background">{row.model}</td>
+              <td className="text-center p-2">{row.mode}</td>
+              <td className="text-center p-2">{row.drafts}</td>
+              <td className="text-center p-2">{row.paragraphs}</td>
+              <td className="text-right p-2">{formatMetric(row.baselineGz, 3)}</td>
+              <td className="text-right p-2">{formatMetric(row.afterGz, 3)}</td>
+              <td className={`text-right p-2 ${getDeltaColor(row.deltaGz)}`}>
+                {formatMetric(row.deltaGz, 3)}
+              </td>
+              <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotGz)}`}>
+                {formatPct(row.zeroshotGz)}
+              </td>
+              <td className={`text-right p-2 ${getDeltaColor(row.deltaSp)}`}>
+                {formatMetric(row.deltaSp, 3)}
+              </td>
+              <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotSp)}`}>
+                {formatPct(row.zeroshotSp)}
+              </td>
+              <td className={`text-right p-2 ${getQualityColor(row.qualityPct)}`}>
+                {formatPct(row.qualityPct)}
+              </td>
+              <td className={`text-right p-2 ${getGrammarColor(row.grammarLv)}`}>
+                {formatMetric(row.grammarLv, 1)}
+              </td>
+              <td className={`text-right p-2 ${getMeaningLevelColor(row.sameMeaningLv)}`}>
+                {formatMetric(row.sameMeaningLv, 1)}
+              </td>
+              <td className={`text-right p-2 ${getMissingInfoColor(row.missingInfoLv)}`}>
+                {formatMetric(row.missingInfoLv, 1)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
+}
 
-  const tableData = useMemo(() => {
-    if (!data || !data.docs) return [];
+function ModelPerformanceView({ stats }) {
+  const rows = computeModelPerformance(stats);
 
-    const rows = [];
-    data.docs.forEach((doc) => {
-      // Handle the actual data structure: doc.runs array
-      if (doc.runs && Array.isArray(doc.runs)) {
-        doc.runs.forEach((run) => {
-          const model = run.model || "unknown";
-          const iter = run.iter || 0;
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-md">
+        <h3 className="font-medium mb-2">Model Performance Summary</h3>
+        <p className="text-sm text-muted-foreground">
+          Aggregated performance metrics across all folders and modes
+        </p>
+      </div>
 
-          // Get AI score from scores_after
-          let ai_score = 0;
-          if (run.scores_after && run.scores_after.group_doc) {
-            ai_score = run.scores_after.group_doc.gptzero || 0;
-          }
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2">Model</th>
+              <th className="text-center p-2">Mode</th>
+              <th className="text-center p-2">Total Drafts</th>
+              <th className="text-right p-2">Avg Δ GZ</th>
+              <th className="text-right p-2">Avg Δ SP</th>
+              <th className="text-right p-2">Zero-shot GZ</th>
+              <th className="text-right p-2">Zero-shot SP</th>
+              <th className="text-right p-2">Avg Quality</th>
+              <th className="text-right p-2">Avg Grammar</th>
+              <th className="text-center p-2">Folders</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => (
+              <tr key={idx} className="border-b hover:bg-muted/50">
+                <td className="p-2 font-medium">{row.model}</td>
+                <td className="text-center p-2">{row.mode}</td>
+                <td className="text-center p-2">{row.totalDrafts}</td>
+                <td className={`text-right p-2 ${getDeltaColor(row.avgDeltaGz)}`}>
+                  {formatMetric(row.avgDeltaGz, 3)}
+                </td>
+                <td className={`text-right p-2 ${getDeltaColor(row.avgDeltaSp)}`}>
+                  {formatMetric(row.avgDeltaSp, 3)}
+                </td>
+                <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotGz)}`}>
+                  {formatPct(row.zeroshotGz)}
+                </td>
+                <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotSp)}`}>
+                  {formatPct(row.zeroshotSp)}
+                </td>
+                <td className={`text-right p-2 ${getQualityColor(row.avgQuality)}`}>
+                  {formatPct(row.avgQuality)}
+                </td>
+                <td className={`text-right p-2 ${getGrammarColor(row.avgGrammar)}`}>
+                  {formatMetric(row.avgGrammar, 1)}
+                </td>
+                <td className="text-center p-2">{row.folders}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-          // Get quality score from flag_counts
-          let quality_score = null;
-          if (run.flag_counts) {
-            quality_score = run.flag_counts.grammar_score;
-          }
+function ExtendedStatsView({ stats }) {
+  const rows = buildExtendedStats(stats);
 
-          rows.push({
-            doc_name: doc.document,
-            folder: doc.folder,
-            model,
-            iteration: iter + 1,
-            ai_score,
-            quality_score,
-          });
-        });
-      }
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-md">
+        <h3 className="font-medium mb-2">Extended Statistical Analysis</h3>
+        <p className="text-sm text-muted-foreground">
+          Descriptive statistics: Min, P25, Median, Mean, P75, Max
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2">Folder</th>
+              <th className="text-left p-2">Model</th>
+              <th className="text-center p-2">Mode</th>
+              <th className="text-right p-2" colSpan={6}>
+                GPTZero
+              </th>
+              <th className="text-right p-2" colSpan={6}>
+                Quality %
+              </th>
+              <th className="text-right p-2" colSpan={6}>
+                Grammar Level
+              </th>
+            </tr>
+            <tr className="border-b text-muted-foreground">
+              <th className="p-2"></th>
+              <th className="p-2"></th>
+              <th className="p-2"></th>
+              <th className="text-right p-2">Min</th>
+              <th className="text-right p-2">P25</th>
+              <th className="text-right p-2">Med</th>
+              <th className="text-right p-2">Mean</th>
+              <th className="text-right p-2">P75</th>
+              <th className="text-right p-2">Max</th>
+              <th className="text-right p-2">Min</th>
+              <th className="text-right p-2">P25</th>
+              <th className="text-right p-2">Med</th>
+              <th className="text-right p-2">Mean</th>
+              <th className="text-right p-2">P75</th>
+              <th className="text-right p-2">Max</th>
+              <th className="text-right p-2">Min</th>
+              <th className="text-right p-2">P25</th>
+              <th className="text-right p-2">Med</th>
+              <th className="text-right p-2">Mean</th>
+              <th className="text-right p-2">P75</th>
+              <th className="text-right p-2">Max</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => (
+              <tr key={idx} className="border-b hover:bg-muted/50">
+                <td className="p-2">{row.folder}</td>
+                <td className="p-2 font-medium">{row.model}</td>
+                <td className="text-center p-2">{row.mode}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.min, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.p25, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.median, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.mean, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.p75, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.gptZero.max, 3)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.min, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.p25, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.median, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.mean, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.p75, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.quality.max, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.min, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.p25, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.median, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.mean, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.p75, 1)}</td>
+                <td className="text-right p-2">{formatMetric(row.grammarLv.max, 1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function FolderSummaryView({ stats }) {
+  const folderSummaries = Object.entries(stats).map(([folder, models]) => {
+    const allRows = [];
+    Object.entries(models).forEach(([model, modes]) => {
+      Object.entries(modes).forEach(([mode, data]) => {
+        allRows.push(data);
+      });
     });
-    return rows;
-  }, [data]);
 
-  const table = useReactTable({
-    data: tableData,
-    columns,
-    state: {
-      sorting,
-      globalFilter,
-    },
-    onSortingChange: setSorting,
-    onGlobalFilterChange: setGlobalFilter,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
+    const totalDrafts = allRows.reduce((sum, d) => sum + (d.draft_count || 0), 0);
+    const avgGzDelta =
+      allRows.reduce((sum, d) => sum + (d.deltas?.gptzero || 0), 0) / allRows.length;
+    const avgZsGz =
+      allRows.reduce((sum, d) => sum + (d.zero_shot_success?.gptzero || 0), 0) / allRows.length;
+    const avgQuality =
+      allRows.reduce((sum, d) => {
+        const q = d.quality ? Object.values(d.quality).reduce((a, b) => a + b, 0) / Object.values(d.quality).length : 0;
+        return sum + q;
+      }, 0) / allRows.length;
+
+    return {
+      folder,
+      totalDrafts,
+      models: Object.keys(models).length,
+      avgGzDelta,
+      avgZsGz,
+      avgQuality,
+    };
   });
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{runName}</CardTitle>
-        <CardDescription>
-          {data.docs?.length || 0} documents, {data.models?.length || 0} models
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <input
-            type="text"
-            placeholder="Search..."
-            value={globalFilter}
-            onChange={(e) => setGlobalFilter(e.target.value)}
-            className="px-3 py-2 border rounded-md w-full max-w-sm"
-          />
+    <div className="space-y-4">
+      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-md">
+        <h3 className="font-medium mb-2">Folder Performance Summary</h3>
+        <p className="text-sm text-muted-foreground">
+          Aggregated metrics by document folder
+        </p>
+      </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id} className="border-b">
-                    {headerGroup.headers.map((header) => (
-                      <th
-                        key={header.id}
-                        className="text-left p-2 cursor-pointer hover:bg-muted/50"
-                        onClick={header.column.getToggleSortingHandler()}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        {header.column.getIsSorted() && (
-                          <span className="ml-2">
-                            {header.column.getIsSorted() === "asc" ? <TrendingUp className="h-3 w-3 inline" /> : <TrendingDown className="h-3 w-3 inline" />}
-                          </span>
-                        )}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.slice(0, 100).map((row) => (
-                  <tr key={row.id} className="border-b hover:bg-muted/50">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="p-2">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2">Folder</th>
+              <th className="text-center p-2">Models</th>
+              <th className="text-center p-2">Total Drafts</th>
+              <th className="text-right p-2">Avg Δ GZ</th>
+              <th className="text-right p-2">Avg Zero-shot GZ</th>
+              <th className="text-right p-2">Avg Quality</th>
+            </tr>
+          </thead>
+          <tbody>
+            {folderSummaries.map((row) => (
+              <tr key={row.folder} className="border-b hover:bg-muted/50">
+                <td className="p-2 font-medium">📁 {row.folder.replace("_", " ").toUpperCase()}</td>
+                <td className="text-center p-2">{row.models}</td>
+                <td className="text-center p-2">{row.totalDrafts}</td>
+                <td className={`text-right p-2 ${getDeltaColor(row.avgGzDelta)}`}>
+                  {formatMetric(row.avgGzDelta, 3)}
+                </td>
+                <td className={`text-right p-2 ${getZeroShotColor(row.avgZsGz)}`}>
+                  {formatPct(row.avgZsGz)}
+                </td>
+                <td className={`text-right p-2 ${getQualityColor(row.avgQuality)}`}>
+                  {formatPct(row.avgQuality)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-          {table.getRowModel().rows.length > 100 && (
-            <p className="text-sm text-muted-foreground text-center">
-              Showing first 100 rows of {table.getRowModel().rows.length}
-            </p>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+function DistributionsView({ stats }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-md">
+        <h3 className="font-medium mb-2">Score & Word-count Distributions</h3>
+        <p className="text-sm text-muted-foreground">
+          Distribution charts will be available in a future update
+        </p>
+      </div>
+      <p className="text-center text-muted-foreground py-8">
+        Chart visualizations coming soon
+      </p>
+    </div>
   );
 }
