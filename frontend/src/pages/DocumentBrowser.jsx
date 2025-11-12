@@ -26,10 +26,12 @@ export function DocumentBrowser() {
     try {
       setError(null);
       const data = await api.listRuns();
-      setRuns(data);
-      if (data.length > 0 && !selectedRun) {
-        setSelectedRun(data[0].name);
-        loadDocuments(data[0].name);
+      // API returns { runs: [...], total: N }
+      const runsList = data.runs || [];
+      setRuns(runsList);
+      if (runsList.length > 0 && !selectedRun) {
+        setSelectedRun(runsList[0].name);
+        loadDocuments(runsList[0].name);
       }
     } catch (err) {
       setError(err.message || "Failed to load runs");
