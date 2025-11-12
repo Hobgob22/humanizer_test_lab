@@ -3,7 +3,7 @@
 Job management endpoints.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 
@@ -13,10 +13,43 @@ from src.job_manager import (
     create_job, get_job, get_active_jobs, get_recent_jobs,
     cancel_job, start_benchmark_job, get_job_logs as get_logs_from_db, JobStatus
 )
+from src.paths import DATA
 from pathlib import Path
 import json
 
 router = APIRouter()
+
+# Helper functions for gathering documents
+def _folder_doc_counts(folder_paths: Dict[str, str]) -> Dict[str, int]:
+    """Count available documents in each folder."""
+    counts = {}
+    for label, path in folder_paths.items():
+        folder = DATA / path if not Path(path).is_absolute() else Path(path)
+        if folder.exists():
+            docs = list(folder.glob("*.docx"))
+            counts[label] = len(docs)
+        else:
+            counts[label] = 0
+    return counts
+
+def _gather_docs(doc_counts: Dict[str, int], folder_paths: Dict[str, str]) -> List[Path]:
+    """Gather document paths from folders based on doc_counts limits."""
+    docs = []
+    for label, limit in doc_counts.items():
+        if limit <= 0:
+            continue
+
+        path = folder_paths.get(label, label)
+        folder = DATA / path if not Path(path).is_absolute() else Path(path)
+
+        if not folder.exists():
+            continue
+
+        # Get .docx files and limit to requested count
+        folder_docs = sorted(folder.glob("*.docx"))
+        docs.extend(folder_docs[:limit] if limit else folder_docs)
+
+    return docs
 
 @router.get("/", response_model=List[JobResponse])
 async def list_jobs(
@@ -107,31 +140,31 @@ async def create_new_job(
         print("📥 [API] CREATE_NEW_JOB endpoint called", flush=True)
         print("=" * 80, flush=True)
         print(f"[API] Request data: run_name={job_data.run_name}, folders={job_data.folders}, models={job_data.models}", flush=True)
-        
-        # Gather documents
-        from src.pages.new_run import _gather_docs, _folder_doc_counts
-        
-        FOLDERS = {
-            "AI texts": "data/ai_texts",
-            "Human texts": "data/human_texts",
-            "AI paragraphs": "data/ai_paras",
-            "Human paragraphs": "data/human_paras",
-        }
-        
-        print(f"[API] Mapping folder labels: {list(job_data.folders)}", flush=True)
-        folder_paths = {f: FOLDERS.get(f, f) for f in job_data.folders}
+
+        # Frontend sends folder paths directly (e.g., "data/ai_texts")
+        # Create folder_paths dict using the paths as both key and value
+        folder_paths = {folder: folder for folder in job_data.folders}
         print(f"[API] Folder paths: {folder_paths}", flush=True)
-        
+
+        # Get available document counts for each folder
         limits = _folder_doc_counts(folder_paths)
-        print(f"[API] Folder limits: {limits}", flush=True)
-        
-        # Create doc_counts dict matching folder labels
+        print(f"[API] Available docs per folder: {limits}", flush=True)
+
+        # Create doc_counts dict: use user-specified limit or all available docs
         doc_counts = {}
-        for folder_label in job_data.folders:
-            doc_counts[folder_label] = job_data.doc_counts.get(folder_label, limits.get(folder_label, 0))
-        
-        print(f"[API] Final doc_counts: {doc_counts}", flush=True)
-        
+        for folder_path in job_data.folders:
+            user_limit = job_data.doc_counts.get(folder_path)
+            available = limits.get(folder_path, 0)
+
+            # If user specified a limit, use it; otherwise use all available
+            if user_limit and user_limit > 0:
+                doc_counts[folder_path] = min(user_limit, available)
+            else:
+                doc_counts[folder_path] = available
+
+        print(f"[API] Final doc_counts (after applying limits): {doc_counts}", flush=True)
+
+        # Gather document paths
         docs = _gather_docs(doc_counts, folder_paths)
         print(f"[API] Gathered {len(docs)} documents", flush=True)
         
