@@ -13,8 +13,7 @@ class JobCreate(BaseModel):
     folders: List[str]
     models: List[str]
     iterations: int
-    doc_counts: Dict[str, int]
-    total_docs: int
+    doc_counts: Dict[str, int] = {}
     include_doc_mode: bool = True
     use_gptzero: bool = True
     use_sapling: bool = True

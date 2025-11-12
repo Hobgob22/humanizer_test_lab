@@ -220,7 +220,15 @@ export function NewRun() {
         navigate("/");
       }, 2000);
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Failed to create job");
+      // Handle FastAPI validation errors (422)
+      if (err.response?.status === 422 && Array.isArray(err.response?.data?.detail)) {
+        const validationErrors = err.response.data.detail
+          .map((e) => `${e.loc?.join(" → ") || "Field"}: ${e.msg}`)
+          .join("; ");
+        setError(`Validation error: ${validationErrors}`);
+      } else {
+        setError(err.response?.data?.detail || err.message || "Failed to create job");
+      }
     } finally {
       setLoading(false);
     }
