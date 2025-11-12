@@ -2,219 +2,352 @@
 
 ## Overview
 
-Humanizer Test Bench is a comprehensive toolkit for rewriting text through multiple LLM “humanizer” prompts/models and evaluating how AI detectors rate the output. It combines OpenAI and Google Gemini for rewriting, GPTZero and Sapling for detection, plus built-in quality, semantic, and statistical analyses.
+Humanizer Test Bench is a comprehensive platform for evaluating text humanization models. It rewrites text through multiple LLM providers, evaluates AI detection scores, and provides detailed analytics on model performance. The platform features a modern **React** frontend with a **FastAPI** backend.
 
 ## Features
 
-- **Multi-Provider Humanization**  
-  - OpenAI (`gpt-4o`, `gpt-4.1`, fine-tuned models)  
-  - Google Gemini Flash  
-- **AI Detection**  
-  - GPTZero & Sapling wrappers with caching and retry logic  
-- **Quality & Semantic Checks**  
-  - Citation & structure validation via Gemini  
-  - Descriptive statistics (mean, percentiles, histograms)  
-- **Interfaces**  
-  - **Streamlit UI** (`src/ui.py`) with live logs and charts  
-  - **CLI** (`src/cli.py`) for batch processing  
-- **Robust Pipeline**  
-  - Caching, rate-limiting, retry policies, and SQLite storage  
-- **DevOps-Ready**  
-  - Docker & Docker Compose configurations  
-  - `Makefile` convenience targets  
-  - systemd service for production
+### 🤖 Multi-Provider Humanization
+- **OpenAI** (gpt-4.1, gpt-4o, gpt-4.1-mini, 15+ fine-tuned models)
+- **Claude** (Sonnet 4, Sonnet 3.7, Haiku 3.5)
+- **Google Gemini** (2.0 Flash, 2.5 Flash, 2.5 Pro)
+- Support for custom dynamic prompts and system configurations
 
-## Setup
+### 🔍 AI Detection & Quality Analysis
+- **GPTZero** and **Sapling** AI detection with caching
+- **Gemini-based Quality Checks** (semantic meaning, citations, grammar)
+- **Statistical Analysis** (mean, median, percentiles, zero-shot success rates)
 
-### 1. Prerequisites
+### 💻 Modern Web Interface
+- **React + Vite** frontend with real-time updates
+- **FastAPI** backend with WebSocket support
+- **Interactive Dashboard** with job monitoring
+- **Comprehensive Analytics** with charts and data tables
+- **Document Browser** for detailed result exploration
 
-- **Git**  
-- **Python 3.10+**  
-- **Docker Engine 20.10+** & **Docker Compose 2.0+**  
-- **Make** (optional, but recommended for shortcuts)  
+### 🚀 Production-Ready
+- **Docker** & **Docker Compose** configurations
+- **Fly.io** deployment ready
+- **SQLite + Turso** dual-database support
+- Automatic backups and disaster recovery
+- Health checks and monitoring
 
-### 2. Clone & Environment
+## Architecture
+
+```
+┌─────────────────┐
+│  React Frontend │  ← Vite, TailwindCSS, React Router
+│  (Port 5173)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  FastAPI Backend│  ← REST API + WebSocket
+│  (Port 8000)    │
+└────────┬────────┘
+         │
+         ├─────────→ OpenAI API
+         ├─────────→ Anthropic Claude API
+         ├─────────→ Google Gemini API
+         ├─────────→ GPTZero API
+         ├─────────→ Sapling API
+         │
+         └─────────→ SQLite / Turso DB
+```
+
+## Quick Start
+
+### Prerequisites
+- **Python 3.11+**
+- **Node.js 22+** and **npm**
+- **Docker** (optional, for containerized deployment)
+
+### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
-````
+git clone <repository-url>
+cd humanizer_test_lab
+```
 
-Copy the example environment file and populate your API keys:
+### 2. Set Up Environment
+
+Copy the example environment file and configure your API keys:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at least:
+Edit `.env` and set your API keys:
 
-```ini
-APP_AUTH_KEY=your_ui_password
-
-# OpenAI
+```bash
+# Required
 OPENAI_API_KEY=sk-...
-HUMANIZER_OPENAI_API_KEY=sk-...
-
-# Detectors
-GPTZERO_API_KEY=...
-SAPLING_API_KEY=...
-
-# Google Gemini
 GEMINI_API_KEY=...
+CLAUDE_API_KEY=...
 
-# (Optional) Tuning defaults
-REHUMANIZE_N=5
-ZERO_SHOT_THRESHOLD=0.10
-MIN_WORDS_PARAGRAPH=15
-MAX_ITER=5
+# Optional but recommended
+GPTZERO_API_KEY=...
+SAPLING_PRIMARY_API_KEY=...
+
+# Authentication
+APP_AUTH_KEY=your-secure-password
+
+# Database (optional - uses local SQLite if not set)
+TURSO_DATABASE_URL=...
+TURSO_AUTH_TOKEN=...
 ```
 
-### 3. Python Virtual Environment (Optional)
+### 3. Development Setup
 
-If you want to run locally without Docker:
+#### Backend
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .\.venv\Scripts\activate
+# Install Python dependencies
 pip install -r requirements.txt
-pip install -r requirements-dev.txt   # for testing & linters
-pre-commit install
+
+# Run FastAPI server with hot reload
+python -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 4. Initialize Project Directories
+#### Frontend
 
 ```bash
-make init
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
 ```
 
-This will ensure `data/`, `cache/`, `logs/`, and `results/` folders exist.
+The application will be available at:
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
 
-### 5. Development Server (Hot Reload)
+### 4. Production Build
 
 ```bash
-make dev
+# Build React frontend
+cd frontend
+npm run build
+cd ..
+
+# Run FastAPI server (serves React build automatically)
+python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
-* Streams logs to your terminal.
-* UI available at [http://localhost:8501](http://localhost:8501).
-* Code changes in `src/` reload automatically.
+Visit http://localhost:8000 to access the application.
 
-To run in background:
+## Docker Deployment
+
+### Development
 
 ```bash
-make dev-d
+docker-compose up
 ```
 
-### 6. Production Server
+### Production
 
 ```bash
-make prod
+# Build and run production container
+docker build -t humanizer-test-bench .
+docker run -p 8000:8000 --env-file .env humanizer-test-bench
 ```
 
-* Brings up the production image on port 8501.
-* For nginx-backed HTTPS, use:
+## Fly.io Deployment
 
 ```bash
-make prod-nginx
+# Install Fly.io CLI
+curl -L https://fly.io/install.sh | sh
+
+# Login to Fly.io
+fly auth login
+
+# Create app (first time only)
+fly launch
+
+# Deploy
+fly deploy
+
+# Set secrets
+fly secrets set OPENAI_API_KEY=sk-...
+fly secrets set GEMINI_API_KEY=...
+fly secrets set CLAUDE_API_KEY=...
+fly secrets set APP_AUTH_KEY=your-secure-password
 ```
-
-See [`DEPLOYMENT.md`](DEPLOYMENT.md) for detailed production and SSL setup.
-
-### 7. Building & Cleaning
-
-* **Build all images:**
-
-  ```bash
-  make build
-  ```
-* **Build dev/prod image only:**
-
-  ```bash
-  make build-dev
-  make build-prod
-  ```
-* **Stop & remove containers:**
-
-  ```bash
-  make clean
-  ```
-* **Prune Docker system:**
-
-  ```bash
-  make docker-clean
-  ```
-
-### 8. Useful Make Targets
-
-* **View logs:**
-
-  ```bash
-  make logs-dev     # development logs
-  make logs-prod    # production logs
-  ```
-* **Open shell:**
-
-  ```bash
-  make shell        # dev container
-  make shell-prod   # prod container
-  ```
-* **Run CLI inside container:**
-
-  ```bash
-  make cli ARGS="--folder data/ai_texts --models gpt-4o,gpt-4.1 --iters 5"
-  ```
-* **Tests & QA:**
-
-  ```bash
-  make test         # run pytest
-  make lint         # flake8 & mypy
-  make format       # black & isort
-  ```
-* **Backup & Restore:**
-
-  ```bash
-  make backup       # archive data/results
-  make restore      # list and restore backups
-  ```
-* **Environment Check:**
-
-  ```bash
-  make check-env
-  ```
-* **Dependencies Update:**
-
-  ```bash
-  make update-deps
-  ```
-* **Resource Monitoring:**
-
-  ```bash
-  make stats        # one-shot docker stats
-  make monitor      # live docker stats
-  ```
 
 ## Usage
 
-### Streamlit UI
+### Creating a New Benchmark Run
 
-```bash
-streamlit run src/ui.py
+1. Navigate to **New Run** page
+2. Configure run settings:
+   - Run name
+   - Document folders (AI texts, Human texts, etc.)
+   - Models to test
+   - Number of iterations
+   - Detection options (GPTZero, Sapling)
+3. Click **Start Run**
+4. Monitor progress in **Job Status** page
+
+### Analyzing Results
+
+- **Benchmark Analysis**: Compare models with statistical summaries and charts
+- **Document Browser**: Explore individual document results
+- **Preview Results**: Quick model screening and rankings
+- **Job Status**: Real-time job monitoring with logs
+
+## Project Structure
+
+```
+humanizer_test_lab/
+├── frontend/               # React frontend
+│   ├── src/
+│   │   ├── components/    # Reusable UI components
+│   │   ├── pages/         # Main application pages
+│   │   ├── lib/          # Utilities and API client
+│   │   └── App.jsx       # Root component
+│   ├── package.json
+│   └── vite.config.js
+├── src/                   # Python backend
+│   ├── api/              # FastAPI application
+│   │   ├── routes/       # API endpoints
+│   │   ├── main.py      # FastAPI app entry
+│   │   └── models.py    # Pydantic schemas
+│   ├── humanizers/       # LLM provider wrappers
+│   ├── detectors/        # AI detection services
+│   ├── evaluation/       # Quality checking
+│   ├── job_manager.py   # Background job processing
+│   ├── pipeline.py      # Main processing pipeline
+│   ├── results_db.py    # Database layer
+│   └── models.py        # Model registry
+├── data/                 # Document storage
+│   ├── ai_texts/
+│   ├── human_texts/
+│   ├── ai_paras/
+│   └── human_paras/
+├── results/             # Run results and database
+├── Dockerfile          # Production container
+├── Dockerfile.dev      # Development container
+├── docker-compose.yml  # Docker Compose config
+├── fly.toml           # Fly.io configuration
+└── README.md
 ```
 
-Log in with your `APP_AUTH_KEY`, configure inputs/models/iterations, and start a run.
+## API Documentation
 
-### CLI
+Once the backend is running, visit:
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+## Key Endpoints
+
+- `GET /api/health` - Health check
+- `POST /api/jobs/` - Create new benchmark job
+- `GET /api/jobs/` - List all jobs
+- `GET /api/jobs/{job_id}` - Get job details
+- `POST /api/jobs/{job_id}/cancel` - Cancel running job
+- `GET /api/runs/` - List completed runs
+- `GET /api/runs/{run_name}` - Load run data
+- `POST /api/statistics/` - Compute statistics
+- `WS /api/ws` - WebSocket for real-time updates
+
+## Configuration
+
+### Model Registry
+
+Models are configured in `src/models.py`. The registry includes:
+- Vanilla LLMs (GPT-4, Claude, Gemini)
+- Fine-tuned models
+- Dynamic prompt models with customizable system prompts
+
+### Rate Limiting
+
+Rate limits are configured per provider:
+- OpenAI: 1500 req/min
+- Gemini: 700 req/min
+- Claude: 700 req/min
+- GPTZero: 500 req/min
+- Sapling: 120,000 chars/2 min
+
+## Development
+
+### Frontend Development
 
 ```bash
-python -m src.cli \
-  --folder data/ai_texts \
-  --models gpt-4o,gpt-4.1,gemini-2.0-flash \
-  --iters 5 \
-  --out results/out.json
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run dev server with hot reload
+npm run dev
+
+# Build for production
+npm run build
+
+# Preview production build
+npm run preview
 ```
 
-Run `python -m src.cli --help` for all available options.
+### Backend Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run with auto-reload
+python -m uvicorn src.api.main:app --reload
+
+# Run tests (if available)
+pytest
+```
+
+## Troubleshooting
+
+### Frontend won't build
+- Ensure Node.js 22+ is installed
+- Delete `node_modules` and `package-lock.json`, then run `npm install`
+- Check for TypeScript/ESLint errors
+
+### Backend API errors
+- Verify all required API keys are set in `.env`
+- Check Python version (3.11+ required)
+- Ensure all dependencies are installed
+
+### Database issues
+- Local SQLite is used by default in `results/runs.sqlite`
+- For Turso, verify `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+- Check file permissions on `results/` directory
+
+## Migration from Streamlit
+
+This application was migrated from Streamlit to React + FastAPI for improved performance and deployment flexibility. All functionality has been preserved:
+
+- ✅ Job creation and monitoring
+- ✅ Real-time progress updates via WebSocket
+- ✅ Benchmark analysis with statistics and charts
+- ✅ Document browsing and detailed results
+- ✅ Model comparison and preview results
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+[Add your license here]
+
+## Support
+
+For issues and questions, please open an issue on GitHub.
+
+---
+
+**Built with**: React, Vite, TailwindCSS, FastAPI, Python, OpenAI, Claude, Gemini
