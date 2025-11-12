@@ -345,12 +345,19 @@ function DetailedStatsTable({ stats, folder }) {
             <th className="text-right p-2">After GZ</th>
             <th className="text-right p-2">Δ GZ</th>
             <th className="text-right p-2">ZS GZ %</th>
-            <th className="text-right p-2">Δ SP</th>
-            <th className="text-right p-2">ZS SP %</th>
+            <th className="text-right p-2">Draft Δ %</th>
+            <th className="text-right p-2">Para Δ %</th>
+            <th className="text-right p-2">±10%</th>
+            <th className="text-right p-2">±15%</th>
+            <th className="text-right p-2">±20%</th>
+            <th className="text-right p-2">% Longer</th>
+            <th className="text-right p-2">% Shorter</th>
             <th className="text-right p-2">Quality %</th>
             <th className="text-right p-2">Grammar</th>
             <th className="text-right p-2">Meaning</th>
             <th className="text-right p-2">Missing</th>
+            <th className="text-right p-2">Cite Used %</th>
+            <th className="text-right p-2">Cite OK %</th>
           </tr>
         </thead>
         <tbody>
@@ -368,12 +375,19 @@ function DetailedStatsTable({ stats, folder }) {
               <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotGz)}`}>
                 {formatPct(row.zeroshotGz)}
               </td>
-              <td className={`text-right p-2 ${getDeltaColor(row.deltaSp)}`}>
-                {formatMetric(row.deltaSp, 3)}
+              <td className="text-right p-2">{formatPct(row.avgDraftDeltaPct)}</td>
+              <td className="text-right p-2">{formatPct(row.avgParaDeltaPct)}</td>
+              <td className={`text-right p-2 ${getLengthDeviationColor(row.lenWithin10Pct)}`}>
+                {formatPct(row.lenWithin10Pct)}
               </td>
-              <td className={`text-right p-2 ${getZeroShotColor(row.zeroshotSp)}`}>
-                {formatPct(row.zeroshotSp)}
+              <td className={`text-right p-2 ${getLengthDeviationColor(row.lenWithin15Pct)}`}>
+                {formatPct(row.lenWithin15Pct)}
               </td>
+              <td className={`text-right p-2 ${getLengthDeviationColor(row.lenWithin20Pct)}`}>
+                {formatPct(row.lenWithin20Pct)}
+              </td>
+              <td className="text-right p-2">{formatPct(row.pctLonger)}</td>
+              <td className="text-right p-2">{formatPct(row.pctShorter)}</td>
               <td className={`text-right p-2 ${getQualityColor(row.qualityPct)}`}>
                 {formatPct(row.qualityPct)}
               </td>
@@ -385,6 +399,12 @@ function DetailedStatsTable({ stats, folder }) {
               </td>
               <td className={`text-right p-2 ${getMissingInfoColor(row.missingInfoLv)}`}>
                 {formatMetric(row.missingInfoLv, 1)}
+              </td>
+              <td className={`text-right p-2 ${getCitationColor(row.citationPreservedPct)}`}>
+                {formatPct(row.citationPreservedPct)}
+              </td>
+              <td className={`text-right p-2 ${getCitationColor(row.citationExactPct)}`}>
+                {formatPct(row.citationExactPct)}
               </td>
             </tr>
           ))}
