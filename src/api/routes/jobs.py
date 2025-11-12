@@ -13,42 +13,29 @@ from src.job_manager import (
     create_job, get_job, get_active_jobs, get_recent_jobs,
     cancel_job, start_benchmark_job, get_job_logs as get_logs_from_db, JobStatus
 )
-from src.paths import DATA
+from src.paths import ROOT
 from pathlib import Path
 import json
 
 router = APIRouter()
 
-# Helper functions for gathering documents
+# Helper functions for gathering documents (matching main branch implementation)
 def _folder_doc_counts(folder_paths: Dict[str, str]) -> Dict[str, int]:
-    """Count available documents in each folder."""
-    counts = {}
-    for label, path in folder_paths.items():
-        folder = DATA / path if not Path(path).is_absolute() else Path(path)
-        if folder.exists():
-            docs = list(folder.glob("*.docx"))
-            counts[label] = len(docs)
-        else:
-            counts[label] = 0
-    return counts
+    """Return {folder-label: number_of_docx}."""
+    return {
+        label: len(list((ROOT / path).glob("*.docx")))
+        for label, path in folder_paths.items()
+    }
 
 def _gather_docs(doc_counts: Dict[str, int], folder_paths: Dict[str, str]) -> List[Path]:
-    """Gather document paths from folders based on doc_counts limits."""
+    """Return actual Path list based on selected counts."""
     docs = []
     for label, limit in doc_counts.items():
         if limit <= 0:
             continue
-
-        path = folder_paths.get(label, label)
-        folder = DATA / path if not Path(path).is_absolute() else Path(path)
-
-        if not folder.exists():
-            continue
-
-        # Get .docx files and limit to requested count
+        folder = ROOT / folder_paths[label]
         folder_docs = sorted(folder.glob("*.docx"))
-        docs.extend(folder_docs[:limit] if limit else folder_docs)
-
+        docs.extend(folder_docs[:limit])
     return docs
 
 @router.get("/", response_model=List[JobResponse])
