@@ -22,7 +22,8 @@ export function PreviewResults() {
     try {
       setError(null);
       const data = await api.listRuns();
-      setRuns(data);
+      // API returns { runs: [...], total: N }
+      setRuns(data.runs || []);
     } catch (err) {
       setError(err.message || "Failed to load runs");
     } finally {
