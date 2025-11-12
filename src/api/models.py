@@ -30,8 +30,8 @@ class JobResponse(BaseModel):
     processed_docs: int
     current_doc: Optional[str] = None
     active_docs: Optional[str] = None
-    folders: str  # JSON string
-    models: str  # JSON string
+    folders: List[str]  # Parsed from JSON string
+    models: List[str]  # Parsed from JSON string
     iterations: int
     doc_counts: Optional[str] = None  # JSON string
     include_doc_mode: Optional[bool] = True

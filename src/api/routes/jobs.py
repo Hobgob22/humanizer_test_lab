@@ -45,6 +45,23 @@ async def list_jobs(
             # Convert include_doc_mode from int to bool if present
             if 'include_doc_mode' in job_dict:
                 job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+            # Parse JSON strings for models and folders
+            if 'models' in job_dict:
+                if isinstance(job_dict['models'], str):
+                    try:
+                        job_dict['models'] = json.loads(job_dict['models'])
+                    except:
+                        job_dict['models'] = []
+                elif not isinstance(job_dict['models'], list):
+                    job_dict['models'] = []
+            if 'folders' in job_dict:
+                if isinstance(job_dict['folders'], str):
+                    try:
+                        job_dict['folders'] = json.loads(job_dict['folders'])
+                    except:
+                        job_dict['folders'] = []
+                elif not isinstance(job_dict['folders'], list):
+                    job_dict['folders'] = []
             result.append(JobResponse(**job_dict))
         
         return result
@@ -64,6 +81,17 @@ async def get_job_by_id(
     job_dict = dict(job)
     if 'include_doc_mode' in job_dict:
         job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+    # Parse JSON strings for models and folders
+    if 'models' in job_dict and isinstance(job_dict['models'], str):
+        try:
+            job_dict['models'] = json.loads(job_dict['models'])
+        except:
+            job_dict['models'] = []
+    if 'folders' in job_dict and isinstance(job_dict['folders'], str):
+        try:
+            job_dict['folders'] = json.loads(job_dict['folders'])
+        except:
+            job_dict['folders'] = []
     
     return JobResponse(**job_dict)
 
@@ -135,6 +163,17 @@ async def create_new_job(
         job_dict = dict(job)
         if 'include_doc_mode' in job_dict:
             job_dict['include_doc_mode'] = bool(job_dict['include_doc_mode'])
+        # Parse JSON strings for models and folders
+        if 'models' in job_dict and isinstance(job_dict['models'], str):
+            try:
+                job_dict['models'] = json.loads(job_dict['models'])
+            except:
+                job_dict['models'] = []
+        if 'folders' in job_dict and isinstance(job_dict['folders'], str):
+            try:
+                job_dict['folders'] = json.loads(job_dict['folders'])
+            except:
+                job_dict['folders'] = []
         
         print(f"[API] Returning JobResponse for job_id: {job_id}", flush=True)
         return JobResponse(**job_dict)
@@ -154,6 +193,18 @@ async def cancel_job_endpoint(
     api_key: str = Depends(verify_api_key)
 ):
     """Cancel a job."""
+    success = cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job not found or cannot be cancelled")
+    
+    return {"message": "Job cancelled successfully", "job_id": job_id}
+
+@router.post("/{job_id}/cancel")
+async def cancel_job_post(
+    job_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Cancel a job (POST endpoint for frontend compatibility)."""
     success = cancel_job(job_id)
     if not success:
         raise HTTPException(status_code=404, detail="Job not found or cannot be cancelled")

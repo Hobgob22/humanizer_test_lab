@@ -43,9 +43,10 @@ export function BenchmarkAnalysis() {
     try {
       setError(null);
       const data = await api.listRuns();
-      setRuns(data);
+      setRuns(data?.runs || []);
     } catch (err) {
       setError(err.message || "Failed to load runs");
+      setRuns([]);
     } finally {
       setLoading(false);
     }
