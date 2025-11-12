@@ -16,8 +16,20 @@ from src.job_manager import (
 from src.paths import ROOT
 from pathlib import Path
 import json
+import re
 
 router = APIRouter()
+
+# Natural sorting regex
+_num = re.compile(r'(\d+)')
+
+def natural_key(p: Path):
+    """
+    Split the filename into text/number chunks so that
+    'AI_text_100.docx' > 'AI_text_11.docx' > 'AI_text_2.docx'.
+    """
+    s = p.name
+    return [int(tok) if tok.isdigit() else tok.lower() for tok in _num.split(s)]
 
 # Helper functions for gathering documents (matching main branch implementation)
 def _folder_doc_counts(folder_paths: Dict[str, str]) -> Dict[str, int]:
@@ -34,7 +46,9 @@ def _gather_docs(doc_counts: Dict[str, int], folder_paths: Dict[str, str]) -> Li
         if limit <= 0:
             continue
         folder = ROOT / folder_paths[label]
-        folder_docs = sorted(folder.glob("*.docx"))
+        # Use natural sorting to ensure AI_text_1, AI_text_2, ..., AI_text_20
+        # instead of AI_text_1, AI_text_10, AI_text_100, ...
+        folder_docs = sorted(folder.glob("*.docx"), key=natural_key)
         docs.extend(folder_docs[:limit])
     return docs
 
