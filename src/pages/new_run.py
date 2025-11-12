@@ -340,8 +340,9 @@ def page_new_run():
     # Sort groups for consistent display
     sorted_groups = sorted(model_groups.keys())
 
-    # Create expandable sections for each base model group
-    with st.expander("🔽 **Select Models by Base Model** (click to expand)", expanded=True):
+    # Create grouped model selector container
+    model_selector = st.container()
+    with model_selector:
         st.caption("Select models to test. Models are grouped by their base model for easier selection.")
 
         # Add "Select All" / "Deselect All" buttons at the top

@@ -111,9 +111,6 @@ Your rewriting must follow these strict rules:
 2. Preserve all `(Ref-XXXX)` citations EXACTLY as they appear.
 3. Do not add or remove any information.
 
-Never use any word or phrase in this blacklist:
-{_BLACKLIST}
-
 Return only the rewritten document—no extra comments.
 """
 
@@ -124,9 +121,6 @@ Your rewriting must follow these strict rules:
 1. Preserve all meaning, facts, and quoted text.
 2. Preserve all `(Ref-XXXX)` citations EXACTLY as they appear.
 3. Do not add or remove any information.
-
-Never use any word or phrase in this blacklist:
-{_BLACKLIST}
 
 Return only the rewritten paragraph—no extra remarks.
 """
@@ -147,9 +141,6 @@ You are an expert editor. Your goal is to rewrite AI-generated text to sound nat
 
 Your output should be a stylistic transformation, not a substantive one.
 
-**STRICTLY** avoid every word or phrase in the blacklist below:
-{_BLACKLIST}
-
 Return only the rewritten document—no extra comments.
 """
 
@@ -165,9 +156,6 @@ You are an expert editor. Your goal is to rewrite AI-generated text to sound nat
 * **Vary Sentence Structure:** Improve the text's rhythm and flow. Break down long, complex sentences into shorter ones. Combine short, choppy sentences into a single, more fluid one when it makes sense.
 * **Be Specific and Direct:** Replace vague, abstract phrasing with concrete and direct language. Use the active voice whenever possible to make the text more engaging.
 * **Simplify Vocabulary:** Replace formal or robotic words (e.g., "utilize," "commence," "aforementioned") with more common, natural alternatives (e.g., "use," "start," "this").
-
-Never use any word or phrase in this blacklist:
-{_BLACKLIST}
 
 Return only the rewritten paragraph—no extra remarks.
 """

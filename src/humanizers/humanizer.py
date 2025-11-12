@@ -330,7 +330,7 @@ def _build_user_prompt(
     """
     if not scores_in_prompt or scores_in_prompt == "none":
         # Simple prompt without scores
-        return f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+        return text
 
     # Default score if not provided (for testing)
     if initial_score is None:
@@ -345,28 +345,28 @@ def _build_user_prompt(
         level = "High"
 
     if scores_in_prompt == "both_raw":
-        return f"""This text's AI level is currently classified as **{initial_score:.2f}**.
+        return f"""This text AI score is  {initial_score:.2f}.
 '''
 {text}
 '''
-Rewrite the text more natural to lower AI score to 0.01."""
+Rewrite the text more natural to lower AI score to  0.01."""
 
     elif scores_in_prompt == "both_binned":
-        return f"""This text AI score is {level}.
+        return f"""This text AI score is **{level}**.
 '''
 {text}
 '''
 Rewrite it so the level becomes **Low**."""
 
     elif scores_in_prompt == "ai_score_raw":
-        return f"""This text's AI level is currently classified as **{initial_score:.2f}**.
+        return f"""This text AI score is  {initial_score:.2f}.
 '''
 {text}
 '''
 Rewrite it more natural so the text sounds human-like."""
 
     elif scores_in_prompt == "ai_score_binned":
-        return f"""This text AI score is {level}.
+        return f"""This text AI score is **{level}**.
 '''
 {text}
 '''

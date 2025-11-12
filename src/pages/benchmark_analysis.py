@@ -3281,9 +3281,9 @@ def _render_full_document_view(by_model: Dict, doc_name: str, para_total: int):
             grammar_score = flag_counts.get("grammar_score")
             
             if same_meaning_level is not None:
-                if same_meaning_level >= 8:
+                if same_meaning_level >= 7:
                     st.success(f"✅ Meaning Level: {same_meaning_level:.1f}/10")
-                elif same_meaning_level >= 6:
+                elif same_meaning_level >= 5:
                     st.warning(f"⚠️ Meaning Level: {same_meaning_level:.1f}/10")
                 else:
                     st.error(f"❌ Meaning Level: {same_meaning_level:.1f}/10")
@@ -3291,9 +3291,9 @@ def _render_full_document_view(by_model: Dict, doc_name: str, para_total: int):
                 st.info("Meaning level not available")
             
             if missing_info_level is not None:
-                if missing_info_level <= 2:
+                if missing_info_level <= 3:
                     st.success(f"✅ Missing Info: {missing_info_level:.1f}/10")
-                elif missing_info_level <= 4:
+                elif missing_info_level <= 5:
                     st.warning(f"⚠️ Missing Info: {missing_info_level:.1f}/10")
                 else:
                     st.error(f"❌ Missing Info: {missing_info_level:.1f}/10")
