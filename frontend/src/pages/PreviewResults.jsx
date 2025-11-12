@@ -52,8 +52,11 @@ export function PreviewResults() {
     const modelStats = {};
 
     runData.docs.forEach((doc) => {
-      if (doc.models) {
-        Object.entries(doc.models).forEach(([model, modelData]) => {
+      // Handle the actual data structure: doc.runs array
+      if (doc.runs && Array.isArray(doc.runs)) {
+        doc.runs.forEach((run) => {
+          const model = run.model || "unknown";
+
           if (!modelStats[model]) {
             modelStats[model] = {
               scores: [],
@@ -63,22 +66,21 @@ export function PreviewResults() {
             };
           }
 
-          if (modelData.iterations) {
-            modelData.iterations.forEach((iter) => {
-              const score = iter.para_ai_score || iter.doc_ai_score;
-              if (score !== null && score !== undefined) {
-                modelStats[model].scores.push(score);
-                modelStats[model].totalCount++;
-                if (score <= 0.1) {
-                  modelStats[model].zeroShotCount++;
-                }
+          // Get AI scores from scores_after
+          if (run.scores_after && run.scores_after.group_doc) {
+            const score = run.scores_after.group_doc.gptzero;
+            if (score !== null && score !== undefined) {
+              modelStats[model].scores.push(score);
+              modelStats[model].totalCount++;
+              if (score <= 0.1) {
+                modelStats[model].zeroShotCount++;
               }
+            }
+          }
 
-              const quality = iter.para_quality_score || iter.doc_quality_score;
-              if (quality !== null && quality !== undefined) {
-                modelStats[model].qualityScores.push(quality);
-              }
-            });
+          // Get quality score from flag_counts
+          if (run.flag_counts && run.flag_counts.grammar_score !== null) {
+            modelStats[model].qualityScores.push(run.flag_counts.grammar_score);
           }
         });
       }
