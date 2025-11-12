@@ -18,7 +18,7 @@ router = APIRouter()
 _statistics_tasks: Dict[str, Dict[str, Any]] = {}
 _task_lock = threading.Lock()
 
-@router.post("/aggregate", response_model=StatisticsResponse)
+@router.post("/", response_model=StatisticsResponse)
 async def compute_statistics(
     request: StatisticsRequest,
     background_tasks: BackgroundTasks,
@@ -54,7 +54,7 @@ async def compute_statistics(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/aggregate/{task_id}", response_model=StatisticsTaskResponse)
+@router.get("/{task_id}", response_model=StatisticsTaskResponse)
 async def get_statistics_task(
     task_id: str,
     api_key: str = Depends(verify_api_key)
@@ -83,11 +83,11 @@ def _compute_statistics_task(task_id: str, run_names: List[str], merge: bool):
         
         # Load run data
         from src.results_db import load_run
-        from src.pages.benchmark_analysis import _aggregate_statistics_by_model_mode_folder, _merge_runs_data
-        
+        from src.evaluation.statistics import aggregate_statistics_by_model, merge_runs_data
+
         if merge:
             # Merge runs first
-            merged_docs, merge_metadata = _merge_runs_data(run_names)
+            merged_docs, merge_metadata = merge_runs_data(run_names)
             docs = merged_docs
         else:
             # Load first run only
@@ -95,12 +95,12 @@ def _compute_statistics_task(task_id: str, run_names: List[str], merge: bool):
             if not run_data:
                 raise ValueError(f"Run not found: {run_names[0]}")
             docs = run_data.get("docs", [])
-        
+
         with _task_lock:
             _statistics_tasks[task_id]["progress"] = 0.5
-        
+
         # Compute statistics
-        stats = _aggregate_statistics_by_model_mode_folder(docs)
+        stats = aggregate_statistics_by_model(docs)
         
         with _task_lock:
             _statistics_tasks[task_id]["status"] = "completed"
