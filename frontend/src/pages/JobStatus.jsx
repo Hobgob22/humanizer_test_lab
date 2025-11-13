@@ -287,10 +287,21 @@ function JobCard({ job, onCancel }) {
         </div>
 
         {showLogs && (
-          <div className="bg-muted rounded-md p-4 max-h-64 overflow-y-auto">
-            <pre className="text-xs font-mono whitespace-pre-wrap">
-              {logs.length > 0 ? logs.join("\n") : "No logs available"}
-            </pre>
+          <div className="bg-muted rounded-md p-4 max-h-96 overflow-y-auto">
+            <div className="space-y-1">
+              {logs.length > 0 ? (
+                logs.map((log, idx) => (
+                  <div key={idx} className="text-xs font-mono">
+                    <span className="text-muted-foreground">
+                      {log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString() : ""}
+                    </span>
+                    <span className="ml-2">{log.message || log}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">No logs available</p>
+              )}
+            </div>
           </div>
         )}
       </CardContent>

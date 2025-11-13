@@ -736,7 +736,7 @@ def _generate_single_draft(
 
 
 def _generate_all_drafts(models, iterations, orig_text, para_objs,
-                         log=None, *, include_para: bool = True, 
+                         log=None, *, include_para: bool = True,
                          include_doc: bool = True, is_para_folder: bool = False):
     out: List[Dict] = []
     total_tasks = len(models) * iterations
@@ -750,9 +750,12 @@ def _generate_all_drafts(models, iterations, orig_text, para_objs,
         modes_lbl = "doc-only drafts"
     else:
         modes_lbl = "para-only drafts"
-        
+
     _stage(f"Generating {total_tasks} {modes_lbl}", log)
-    
+    _maybe_log(f"Models: {', '.join(models)}", log)
+    _maybe_log(f"Iterations per model: {iterations}", log)
+    _maybe_log(f"Parallel workers: {max_workers}", log)
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         fut_to_info = {}
         for m in models:
@@ -760,7 +763,7 @@ def _generate_all_drafts(models, iterations, orig_text, para_objs,
                 fut = pool.submit(
                     _generate_single_draft,
                     m, i, orig_text, para_objs,
-                    include_para=include_para, 
+                    include_para=include_para,
                     include_doc=include_doc,
                     is_para_folder=is_para_folder,
                     log=log,
@@ -768,17 +771,23 @@ def _generate_all_drafts(models, iterations, orig_text, para_objs,
                 fut_to_info[fut] = (m, i)
 
         completed = 0
+        failed = 0
         try:
             for fut in as_completed(fut_to_info):
-                completed += 1
                 model, iter_num = fut_to_info[fut]
-                _maybe_log(f"Progress: {completed}/{total_tasks} • {model} iter {iter_num+1}", log)
-                out.extend(fut.result())
+                try:
+                    result = fut.result()
+                    completed += 1
+                    _maybe_log(f"✓ [{completed}/{total_tasks}] {model} iteration {iter_num+1} completed", log)
+                    out.extend(result)
+                except Exception as e:
+                    failed += 1
+                    _maybe_log(f"✗ [{completed+failed}/{total_tasks}] {model} iteration {iter_num+1} failed: {str(e)[:100]}", log)
         except KeyboardInterrupt:
             pool.shutdown(wait=False, cancel_futures=True)
             raise
 
-    _stage(f"✓ All {len(out)} drafts generated", log)
+    _stage(f"✓ Generation complete: {completed} succeeded, {failed} failed (total {len(out)} drafts)", log)
     return out
 
 # ═══════════════ 9 · Assembly helpers ═══════════════════════════════
@@ -1367,15 +1376,17 @@ def run_test(doc_path: Path, models: List[str]|None=None,
     if not q_pairs_list:
         _maybe_log("– SKIP quality checks (no pairs)", logger)
     else:
+        _maybe_log(f"Quality evaluation: {len(q_pairs_list)} unique paragraph pairs to evaluate", logger)
         for attempt in range(1, max_retries + 1):
             try:
                 if attempt > 1:
                     _maybe_log(f"🔄 Retrying Phase 3 (attempt {attempt}/{max_retries})", logger)
                     time.sleep(min(30 * (attempt - 1), 120))
-                    
+
                 q_results = _batch_quality_check(q_pairs_list, logger)
+                _maybe_log(f"✓ Quality evaluation complete: {len(q_results)} pairs evaluated", logger)
                 break
-                
+
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
@@ -1477,6 +1488,14 @@ def run_test(doc_path: Path, models: List[str]|None=None,
         ))
 
     _stage("run_test COMPLETE", logger)
+    # Final summary
+    _stage(f"✓ Document processing complete", logger)
+    _maybe_log(f"Document: {doc_path.name}", logger)
+    _maybe_log(f"Total runs generated: {len(runs)}", logger)
+    _maybe_log(f"Paragraphs: {len(orig_paras)}", logger)
+    _maybe_log(f"Word count: {wc_before}", logger)
+    _maybe_log("="*60, logger)
+
     return {
         "document": doc_path.name,
         "folder": doc_path.parent.name,
