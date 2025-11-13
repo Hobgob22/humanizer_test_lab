@@ -110,13 +110,15 @@ export function NewRun() {
   const [formData, setFormData] = useState({
     runName: `run_${Date.now()}`,
     folders: ["data/ai_texts"],
-    models: ["gpt-4.1"],
-    iterations: 5,
+    models: [],
+    iterations: 1,
     docCounts: {},
     includeDocMode: true,
     useGptzero: true,
     useSapling: true,
   });
+
+  const [bulkModelInput, setBulkModelInput] = useState("");
 
   const toggleSection = (section) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
@@ -173,6 +175,84 @@ export function NewRun() {
         [folder]: count ? parseInt(count) : undefined,
       },
     }));
+  };
+
+  const handleBulkModelInput = () => {
+    // Parse line-separated model IDs and add them to selection
+    const modelIds = bulkModelInput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (modelIds.length === 0) return;
+
+    setFormData((prev) => {
+      const newModels = [...prev.models];
+      modelIds.forEach((id) => {
+        if (!newModels.includes(id)) {
+          newModels.push(id);
+        }
+      });
+      return { ...prev, models: newModels };
+    });
+
+    setBulkModelInput("");
+  };
+
+  const selectAllInGroup = (models) => {
+    setFormData((prev) => {
+      const newModels = [...prev.models];
+      models.forEach((model) => {
+        const id = model.id || model.prefix;
+        if (!newModels.includes(id)) {
+          newModels.push(id);
+        }
+      });
+      return { ...prev, models: newModels };
+    });
+  };
+
+  const deselectAllInGroup = (models) => {
+    setFormData((prev) => {
+      const ids = models.map((m) => m.id || m.prefix);
+      const newModels = prev.models.filter((m) => !ids.includes(m));
+      return { ...prev, models: newModels };
+    });
+  };
+
+  const selectAllCheckpoints = () => {
+    setFormData((prev) => {
+      const newModels = [...prev.models];
+      Object.values(NEW_FINETUNES).flat().forEach((model) => {
+        // Add final version
+        if (!newModels.includes(model.prefix)) {
+          newModels.push(model.prefix);
+        }
+        // Add checkpoints if available
+        if (model.hasCheckpoints) {
+          const ckpt1 = `${model.prefix}:ckpt1`;
+          const ckpt2 = `${model.prefix}:ckpt2`;
+          if (!newModels.includes(ckpt1)) newModels.push(ckpt1);
+          if (!newModels.includes(ckpt2)) newModels.push(ckpt2);
+        }
+      });
+      return { ...prev, models: newModels };
+    });
+  };
+
+  const deselectAllCheckpoints = () => {
+    setFormData((prev) => {
+      const checkpointIds = new Set();
+      Object.values(NEW_FINETUNES).flat().forEach((model) => {
+        checkpointIds.add(model.prefix);
+        if (model.hasCheckpoints) {
+          checkpointIds.add(`${model.prefix}:ckpt1`);
+          checkpointIds.add(`${model.prefix}:ckpt2`);
+        }
+      });
+      const newModels = prev.models.filter((m) => !checkpointIds.has(m));
+      return { ...prev, models: newModels };
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -351,14 +431,38 @@ export function NewRun() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Bulk Model Input */}
+            <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Bulk Model Selection</label>
+                <span className="text-xs text-muted-foreground">Paste OpenAI fine-tune IDs</span>
+              </div>
+              <textarea
+                value={bulkModelInput}
+                onChange={(e) => setBulkModelInput(e.target.value)}
+                placeholder="ft:gpt-4o-mini-2024-07-18:litero-ai:min-e3-b8-m10-v10:CahO6KtY&#10;ft:gpt-4o-mini-2024-07-18:litero-ai:raw-e5-b16-m08-v10:CaRGQPzO&#10;ft:gpt-4o-mini-2024-07-18:litero-ai:cmp-e4-b24-m12-v15:CahcnBqU"
+                className="w-full min-h-[100px] p-2 text-sm font-mono border rounded resize-y"
+                disabled={loading}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={handleBulkModelInput}
+                disabled={loading || !bulkModelInput.trim()}
+              >
+                Add Models from List
+              </Button>
+            </div>
+
             {/* Vanilla Models */}
             <div className="border rounded-md">
-              <button
-                type="button"
-                onClick={() => toggleSection("vanilla")}
-                className="w-full flex items-center justify-between p-3 hover:bg-muted/50"
-              >
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between p-3">
+                <button
+                  type="button"
+                  onClick={() => toggleSection("vanilla")}
+                  className="flex items-center gap-2 hover:bg-muted/50 flex-1"
+                >
                   {expandedSections.vanilla ? (
                     <ChevronDown className="h-4 w-4" />
                   ) : (
@@ -368,8 +472,30 @@ export function NewRun() {
                   <span className="text-sm text-muted-foreground">
                     ({countSelectedInGroup(VANILLA_MODELS)}/{VANILLA_MODELS.length})
                   </span>
+                </button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => selectAllInGroup(VANILLA_MODELS)}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => deselectAllInGroup(VANILLA_MODELS)}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Deselect All
+                  </Button>
                 </div>
-              </button>
+              </div>
               {expandedSections.vanilla && (
                 <div className="p-3 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                   {VANILLA_MODELS.map((model) => (
@@ -393,12 +519,12 @@ export function NewRun() {
 
             {/* Old Finetunes */}
             <div className="border rounded-md">
-              <button
-                type="button"
-                onClick={() => toggleSection("oldFinetunes")}
-                className="w-full flex items-center justify-between p-3 hover:bg-muted/50"
-              >
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between p-3">
+                <button
+                  type="button"
+                  onClick={() => toggleSection("oldFinetunes")}
+                  className="flex items-center gap-2 hover:bg-muted/50 flex-1"
+                >
                   {expandedSections.oldFinetunes ? (
                     <ChevronDown className="h-4 w-4" />
                   ) : (
@@ -408,8 +534,30 @@ export function NewRun() {
                   <span className="text-sm text-muted-foreground">
                     ({countSelectedInGroup(OLD_FINETUNES)}/{OLD_FINETUNES.length})
                   </span>
+                </button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => selectAllInGroup(OLD_FINETUNES)}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => deselectAllInGroup(OLD_FINETUNES)}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Deselect All
+                  </Button>
                 </div>
-              </button>
+              </div>
               {expandedSections.oldFinetunes && (
                 <div className="p-3 pt-0 grid grid-cols-1 md:grid-cols-2 gap-2">
                   {OLD_FINETUNES.map((model) => (
@@ -433,12 +581,12 @@ export function NewRun() {
 
             {/* New Finetunes */}
             <div className="border rounded-md">
-              <button
-                type="button"
-                onClick={() => toggleSection("newFinetunes")}
-                className="w-full flex items-center justify-between p-3 hover:bg-muted/50"
-              >
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between p-3">
+                <button
+                  type="button"
+                  onClick={() => toggleSection("newFinetunes")}
+                  className="flex items-center gap-2 hover:bg-muted/50 flex-1"
+                >
                   {expandedSections.newFinetunes ? (
                     <ChevronDown className="h-4 w-4" />
                   ) : (
@@ -448,8 +596,30 @@ export function NewRun() {
                   <span className="text-sm text-muted-foreground">
                     (30 models across 5 base models)
                   </span>
+                </button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={selectAllCheckpoints}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={deselectAllCheckpoints}
+                    disabled={loading}
+                    className="text-xs h-7"
+                  >
+                    Deselect All
+                  </Button>
                 </div>
-              </button>
+              </div>
               {expandedSections.newFinetunes && (
                 <div className="p-3 pt-0 space-y-3">
                   {Object.entries(NEW_FINETUNES).map(([baseModel, models]) => (
