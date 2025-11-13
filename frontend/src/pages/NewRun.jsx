@@ -177,26 +177,71 @@ export function NewRun() {
     }));
   };
 
-  const handleBulkModelInput = () => {
+  const handleBulkModelInput = async () => {
     // Parse line-separated model IDs and add them to selection
     const modelIds = bulkModelInput
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
 
+    console.log("[Bulk Input] Raw input lines:", modelIds);
+
     if (modelIds.length === 0) return;
 
-    setFormData((prev) => {
-      const newModels = [...prev.models];
-      modelIds.forEach((id) => {
-        if (!newModels.includes(id)) {
-          newModels.push(id);
+    try {
+      // Fetch the model registry from the API to map full OpenAI IDs to short keys
+      const response = await fetch("http://localhost:8000/api/models");
+      const models = await response.json();
+
+      console.log("[Bulk Input] Available models from API:", models.length);
+
+      // Create reverse mapping: full OpenAI model ID -> short key
+      const reverseMap = {};
+      Object.entries(models).forEach(([shortKey, metadata]) => {
+        if (metadata.model) {
+          reverseMap[metadata.model] = shortKey;
         }
       });
-      return { ...prev, models: newModels };
-    });
 
-    setBulkModelInput("");
+      console.log("[Bulk Input] Created reverse mapping with", Object.keys(reverseMap).length, "entries");
+
+      setFormData((prev) => {
+        const newModels = [...prev.models];
+        let addedCount = 0;
+        let notFoundCount = 0;
+
+        modelIds.forEach((id) => {
+          // Try to find the short key for this ID
+          let shortKey = reverseMap[id];
+
+          // If not found in reverse map, maybe it's already a short key
+          if (!shortKey && models[id]) {
+            shortKey = id;
+          }
+
+          if (shortKey) {
+            if (!newModels.includes(shortKey)) {
+              newModels.push(shortKey);
+              addedCount++;
+              console.log("[Bulk Input] ✓ Added:", id, "→", shortKey);
+            } else {
+              console.log("[Bulk Input] - Already selected:", shortKey);
+            }
+          } else {
+            notFoundCount++;
+            console.warn("[Bulk Input] ✗ Model not found in registry:", id);
+          }
+        });
+
+        console.log(`[Bulk Input] Summary: ${addedCount} added, ${notFoundCount} not found`);
+        return { ...prev, models: newModels };
+      });
+
+      setBulkModelInput("");
+    } catch (err) {
+      console.error("[Bulk Input] Error fetching models:", err);
+      setError("Failed to fetch model registry. Please try again.");
+    }
   };
 
   const selectAllInGroup = (models) => {
