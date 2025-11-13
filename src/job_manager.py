@@ -49,16 +49,41 @@ JOB_DB_PATH.parent.mkdir(exist_ok=True, parents=True)
 # Global thread pool for background jobs
 _job_threads: Dict[str, threading.Thread] = {}
 _job_lock = threading.Lock()
+_db_write_lock = threading.Lock()  # Serialize database writes to prevent lock contention
 
 @contextmanager
 def _get_conn():
-    """Get a database connection with proper error handling."""
-    conn = sqlite3.connect(JOB_DB_PATH, timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+    """Get a database connection with proper error handling and retry logic."""
+    max_retries = 5
+    retry_delay = 0.1  # Start with 100ms
+
+    for attempt in range(max_retries):
+        try:
+            conn = sqlite3.connect(JOB_DB_PATH, timeout=60, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+
+            # Enable WAL mode for better concurrency
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Set busy timeout to 60 seconds
+            conn.execute("PRAGMA busy_timeout=60000")
+
+            try:
+                yield conn
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    conn.close()
+                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    continue
+                raise
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
+                continue
+            raise
 
 def init_db():
     """Initialize the jobs database."""
@@ -227,77 +252,79 @@ def update_job_status(
     remove_active_doc: Optional[str] = None
 ):
     """Update job status and optionally add a log entry to separate logs table (O(1) operation)."""
-    with _get_conn() as conn:
-        # Add log entry to separate table (O(1) operation - no read/parse/write overhead)
-        if log_entry:
-            conn.execute("""
-                INSERT INTO job_logs (job_id, timestamp, message)
-                VALUES (?, ?, ?)
-            """, (job_id, time.time(), log_entry))
+    # Use write lock to serialize database writes and prevent lock contention
+    with _db_write_lock:
+        with _get_conn() as conn:
+            # Add log entry to separate table (O(1) operation - no read/parse/write overhead)
+            if log_entry:
+                conn.execute("""
+                    INSERT INTO job_logs (job_id, timestamp, message)
+                    VALUES (?, ?, ?)
+                """, (job_id, time.time(), log_entry))
 
-        # Build update query for job status
-        updates = ["status = ?"]
-        params = [status.value]
+            # Build update query for job status
+            updates = ["status = ?"]
+            params = [status.value]
 
-        if status == JobStatus.RUNNING and "started_at" not in updates:
-            updates.append("started_at = ?")
-            params.append(time.time())
+            if status == JobStatus.RUNNING and "started_at" not in updates:
+                updates.append("started_at = ?")
+                params.append(time.time())
 
-        if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
-            updates.append("completed_at = ?")
-            params.append(time.time())
+            if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                updates.append("completed_at = ?")
+                params.append(time.time())
 
-        if current_doc is not None:
-            # Combine document and stage info for current_doc field
-            if current_stage:
-                combined_status = f"{current_doc} | {current_stage}"
-            else:
-                combined_status = current_doc
-            updates.append("current_doc = ?")
-            params.append(combined_status)
+            if current_doc is not None:
+                # Combine document and stage info for current_doc field
+                if current_stage:
+                    combined_status = f"{current_doc} | {current_stage}"
+                else:
+                    combined_status = current_doc
+                updates.append("current_doc = ?")
+                params.append(combined_status)
 
-        # Handle active documents list
-        if add_active_doc is not None or remove_active_doc is not None:
-            # Get current active docs
-            cursor = conn.execute("SELECT active_docs FROM jobs WHERE job_id = ?", (job_id,))
-            row = cursor.fetchone()
-            if row:
-                try:
-                    active_docs = json.loads(row["active_docs"] or "[]")
-                except json.JSONDecodeError:
-                    active_docs = []
+            # Handle active documents list
+            if add_active_doc is not None or remove_active_doc is not None:
+                # Get current active docs
+                cursor = conn.execute("SELECT active_docs FROM jobs WHERE job_id = ?", (job_id,))
+                row = cursor.fetchone()
+                if row:
+                    try:
+                        active_docs = json.loads(row["active_docs"] or "[]")
+                    except json.JSONDecodeError:
+                        active_docs = []
 
-                logger.info(f"📋 Current active docs before update: {active_docs}")
+                    logger.info(f"📋 Current active docs before update: {active_docs}")
 
-                # Add document to active list
-                if add_active_doc:
-                    doc_stage = f"{add_active_doc} | {current_stage}" if current_stage else add_active_doc
-                    # Remove any existing entry for this document first
-                    active_docs = [doc for doc in active_docs if not doc.startswith(f"{add_active_doc} |")]
-                    active_docs.append(doc_stage)
-                    logger.info(f"➕ Added '{doc_stage}' to active docs")
+                    # Add document to active list
+                    if add_active_doc:
+                        doc_stage = f"{add_active_doc} | {current_stage}" if current_stage else add_active_doc
+                        # Remove any existing entry for this document first
+                        active_docs = [doc for doc in active_docs if not doc.startswith(f"{add_active_doc} |")]
+                        active_docs.append(doc_stage)
+                        logger.info(f"➕ Added '{doc_stage}' to active docs")
 
-                # Remove document from active list
-                if remove_active_doc:
-                    original_count = len(active_docs)
-                    active_docs = [doc for doc in active_docs if not doc.startswith(f"{remove_active_doc} |")]
-                    logger.info(f"➖ Removed docs starting with '{remove_active_doc}' (removed {original_count - len(active_docs)} entries)")
+                    # Remove document from active list
+                    if remove_active_doc:
+                        original_count = len(active_docs)
+                        active_docs = [doc for doc in active_docs if not doc.startswith(f"{remove_active_doc} |")]
+                        logger.info(f"➖ Removed docs starting with '{remove_active_doc}' (removed {original_count - len(active_docs)} entries)")
 
-                logger.info(f"📋 New active docs after update: {active_docs}")
-                updates.append("active_docs = ?")
-                params.append(json.dumps(active_docs))
+                    logger.info(f"📋 New active docs after update: {active_docs}")
+                    updates.append("active_docs = ?")
+                    params.append(json.dumps(active_docs))
 
-        if processed_docs is not None:
-            updates.append("processed_docs = ?")
-            params.append(processed_docs)
+            if processed_docs is not None:
+                updates.append("processed_docs = ?")
+                params.append(processed_docs)
 
-        if error is not None:
-            updates.append("error = ?")
-            params.append(error)
+            if error is not None:
+                updates.append("error = ?")
+                params.append(error)
 
-        params.append(job_id)
-        conn.execute(f"UPDATE jobs SET {', '.join(updates)} WHERE job_id = ?", params)
-        conn.commit()
+            params.append(job_id)
+            conn.execute(f"UPDATE jobs SET {', '.join(updates)} WHERE job_id = ?", params)
+            # commit() is now handled by _get_conn() context manager
 
 def get_job_logs(job_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     """
