@@ -15,6 +15,7 @@ from src.api.routes import jobs, runs, documents, statistics
 from src.api.websocket import router as websocket_router
 from src.job_manager import init_db as init_job_db
 from src.results_db import _conn as get_runs_db
+from src.models import MODEL_REGISTRY
 
 # Initialize databases on startup
 @asynccontextmanager
@@ -75,6 +76,11 @@ app.include_router(websocket_router, prefix="/api", tags=["websocket"])
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+@app.get("/api/models")
+async def get_models():
+    """Return the model registry for UI mapping."""
+    return MODEL_REGISTRY
 
 # Mount static files for React frontend (if built)
 STATIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
