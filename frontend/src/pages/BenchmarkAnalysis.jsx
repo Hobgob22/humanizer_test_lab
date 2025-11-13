@@ -20,7 +20,7 @@ import {
   getCitationColor,
   getLengthDeviationColor,
 } from "../lib/statistics";
-import { Loader2, Download, BarChart3, Info, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Download, BarChart3, Info, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 
 export function BenchmarkAnalysis() {
   const [runs, setRuns] = useState([]);
@@ -31,6 +31,7 @@ export function BenchmarkAnalysis() {
   const [error, setError] = useState(null);
   const [mergeRuns, setMergeRuns] = useState(false);
   const [activeTab, setActiveTab] = useState("folder");
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     loadRuns();
@@ -105,6 +106,60 @@ export function BenchmarkAnalysis() {
       timestamp: Date.now(),
     };
     downloadJSON(exportData, `benchmark_export_${Date.now()}.json`);
+  };
+
+  const handleDeleteRuns = async () => {
+    if (selectedRuns.length === 0) {
+      alert("Please select at least one run to delete");
+      return;
+    }
+
+    const confirmMessage = selectedRuns.length === 1
+      ? `Are you sure you want to delete the run "${selectedRuns[0]}"?`
+      : `Are you sure you want to delete ${selectedRuns.length} runs?\n\n${selectedRuns.join(", ")}`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setDeleting(true);
+    setError(null);
+
+    try {
+      let successCount = 0;
+      let failCount = 0;
+      const errors = [];
+
+      for (const runName of selectedRuns) {
+        try {
+          await api.deleteRun(runName);
+          successCount++;
+        } catch (err) {
+          failCount++;
+          errors.push(`${runName}: ${err.message}`);
+        }
+      }
+
+      if (successCount > 0) {
+        // Refresh the runs list
+        await loadRuns();
+        // Clear selection and statistics
+        setSelectedRuns([]);
+        setStatistics(null);
+      }
+
+      if (failCount === 0) {
+        alert(`Successfully deleted ${successCount} run${successCount > 1 ? "s" : ""}`);
+      } else {
+        alert(
+          `Deleted ${successCount} run${successCount > 1 ? "s" : ""}, failed to delete ${failCount}:\n\n${errors.join("\n")}`
+        );
+      }
+    } catch (err) {
+      setError(`Failed to delete runs: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   if (loading) {
@@ -193,7 +248,7 @@ export function BenchmarkAnalysis() {
               </label>
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
               <Button onClick={computeStatistics} disabled={loadingStats}>
                 {loadingStats ? (
                   <>
@@ -213,6 +268,23 @@ export function BenchmarkAnalysis() {
                   Download Data
                 </Button>
               )}
+              <Button
+                variant="destructive"
+                onClick={handleDeleteRuns}
+                disabled={deleting || selectedRuns.length === 0}
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Selected ({selectedRuns.length})
+                  </>
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>
