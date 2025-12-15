@@ -15,6 +15,7 @@ const navigation = [
   { name: "Benchmark Analysis", href: "/benchmark-analysis", icon: BarChart3 },
   { name: "Document Browser", href: "/document-browser", icon: FileText },
   { name: "Preview Results", href: "/preview-results", icon: LayoutDashboard },
+  { name: "Writing Profile Lab", href: "/writing-profile", icon: FileText },
 ];
 
 export function Layout({ children }) {

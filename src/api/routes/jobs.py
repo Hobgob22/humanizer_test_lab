@@ -184,7 +184,11 @@ async def create_new_job(
             doc_counts=doc_counts,
             include_doc_mode=job_data.include_doc_mode,
             use_gptzero=job_data.use_gptzero,
-            use_sapling=job_data.use_sapling
+            use_sapling=job_data.use_sapling,
+            user_style_profile=job_data.user_style_profile,
+            user_style_profile_mode=job_data.user_style_profile_mode,
+            use_style_adherence=job_data.use_style_adherence,
+            user_style_models=job_data.user_style_models
         )
         print(f"[API] [OK] start_benchmark_job returned job_id: {job_id}", flush=True)
         

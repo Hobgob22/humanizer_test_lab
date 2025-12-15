@@ -7,6 +7,7 @@ import { NewRun } from "./pages/NewRun";
 import { BenchmarkAnalysis } from "./pages/BenchmarkAnalysis";
 import { DocumentBrowser } from "./pages/DocumentBrowser";
 import { PreviewResults } from "./pages/PreviewResults";
+import { WritingProfile } from "./pages/WritingProfile";
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
                   <Route path="/benchmark-analysis" element={<BenchmarkAnalysis />} />
                   <Route path="/document-browser" element={<DocumentBrowser />} />
                   <Route path="/preview-results" element={<PreviewResults />} />
+                  <Route path="/writing-profile" element={<WritingProfile />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Layout>

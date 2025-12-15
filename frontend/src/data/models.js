@@ -1,0 +1,21 @@
+export const VANILLA_MODELS = [
+  { id: "gpt-4.1", name: "GPT-4.1", provider: "OpenAI" },
+  { id: "gpt-4.1-mini", name: "GPT-4.1 Mini", provider: "OpenAI" },
+  { id: "gpt-4o", name: "GPT-4o", provider: "OpenAI" },
+  { id: "gpt-5", name: "GPT-5", provider: "OpenAI" },
+  { id: "gpt-5-mini", name: "GPT-5 Mini", provider: "OpenAI" },
+  { id: "gpt-5-nano", name: "GPT-5 Nano", provider: "OpenAI" },
+  { id: "gpt-5.1", name: "GPT-5.1", provider: "OpenAI" },
+  { id: "claude-sonnet-4", name: "Claude Sonnet 4", provider: "Anthropic" },
+  { id: "claude-sonnet-3.7", name: "Claude Sonnet 3.7", provider: "Anthropic" },
+  { id: "claude-haiku-3.5", name: "Claude Haiku 3.5", provider: "Anthropic" },
+  { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", provider: "Anthropic" },
+  { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", provider: "Anthropic" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", provider: "Google" },
+  { id: "gemini-2.0-flash-lite", name: "Gemini 2.0 Flash Lite", provider: "Google" },
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "Google" },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "Google" },
+  { id: "gemini-3-pro", name: "Gemini 3 Pro", provider: "Google" },
+  { id: "kimi-k2", name: "Kimi K2", provider: "Moonshot / Groq" },
+];
+

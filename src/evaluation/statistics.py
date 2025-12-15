@@ -179,6 +179,13 @@ def aggregate_statistics_by_model(docs: List[Dict]) -> Dict[str, Any]:
                 "total_paragraphs": [],
                 "series": defaultdict(list),
                 "source_runs": set(),
+                "style_adherence_scores": {
+                    "overall": [],
+                    "hedging": [],
+                    "formality": [],
+                    "vocabulary": [],
+                    "sentence_structure": []
+                },
             },
         )
 
@@ -282,6 +289,20 @@ def aggregate_statistics_by_model(docs: List[Dict]) -> Dict[str, Any]:
             para_level_mismatches = dr.get("para_level_mismatches", 0)
             bucket["para_level_mismatched_paragraphs"] += para_level_mismatches
 
+        # Style adherence scores
+        if "style_adherence" in dr:
+            sa = dr["style_adherence"]
+            if sa and "overall_adherence" in sa:
+                bucket["style_adherence_scores"]["overall"].append(sa["overall_adherence"].get("score", 0))
+            if sa and "hedging" in sa:
+                bucket["style_adherence_scores"]["hedging"].append(sa["hedging"].get("score", 0))
+            if sa and "formality" in sa:
+                bucket["style_adherence_scores"]["formality"].append(sa["formality"].get("score", 0))
+            if sa and "vocabulary" in sa:
+                bucket["style_adherence_scores"]["vocabulary"].append(sa["vocabulary"].get("score", 0))
+            if sa and "sentence_structure" in sa:
+                bucket["style_adherence_scores"]["sentence_structure"].append(sa["sentence_structure"].get("score", 0))
+
     # Aggregate bucket data
     result = {}
     for folder, models in stats.items():
@@ -336,6 +357,17 @@ def aggregate_statistics_by_model(docs: List[Dict]) -> Dict[str, Any]:
 
                 data["total_content_paragraphs"] = doc_level_total_paras
 
+                # Style adherence averages
+                style_scores = data.get("style_adherence_scores", {})
+                avg_style_adherence = {
+                    "overall": np.mean(style_scores["overall"]) if style_scores["overall"] else None,
+                    "hedging": np.mean(style_scores["hedging"]) if style_scores["hedging"] else None,
+                    "formality": np.mean(style_scores["formality"]) if style_scores["formality"] else None,
+                    "vocabulary": np.mean(style_scores["vocabulary"]) if style_scores["vocabulary"] else None,
+                    "sentence_structure": np.mean(style_scores["sentence_structure"]) if style_scores["sentence_structure"] else None,
+                    "count": len(style_scores["overall"])
+                }
+
                 result[folder][model][mode] = {
                     "baseline": baseline,
                     "after": {"gptzero": after_gz, "sapling": after_sp},
@@ -385,6 +417,7 @@ def aggregate_statistics_by_model(docs: List[Dict]) -> Dict[str, Any]:
                     "wc_deltas": data["wc_deltas"],
                     "series": {k: list(v) for k, v in data["series"].items()},
                     "source_runs": list(data["source_runs"]),
+                    "style_adherence": avg_style_adherence,
                 }
 
     return result

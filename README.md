@@ -1,10 +1,21 @@
-# Humanizer Test Bench
+# Humanizer Test Bench (Test Lab v2)
 
 ## Overview
 
 Humanizer Test Bench is a comprehensive platform for evaluating text humanization models. It rewrites text through multiple LLM providers, evaluates AI detection scores, and provides detailed analytics on model performance. The platform features a modern **React** frontend with a **FastAPI** backend.
 
 ## Features
+
+### 🧪 Writing Profile Lab (v2)
+- Generate a structured **writing profile** from a sample (multi-provider structured output)
+- Copy/paste profile payloads between pages for reproducible experiments
+- Humanize a text using a selected writing profile with **user/system prompt injection modes**
+- Built-in **stop buttons** and resilient error handling for long-running actions
+
+### 🎯 User-Style Humanization Tests
+- Dedicated model section for “user-style” experiments
+- Paste a writing profile and choose injection mode (system/user)
+- Optional **Style Adherence** evaluator (Gemini 2.5 Flash) to score how well outputs adopt the target style
 
 ### 🤖 Multi-Provider Humanization
 - **OpenAI** (gpt-4.1, gpt-4o, gpt-4.1-mini, 15+ fine-tuned models)
@@ -15,6 +26,7 @@ Humanizer Test Bench is a comprehensive platform for evaluating text humanizatio
 ### 🔍 AI Detection & Quality Analysis
 - **GPTZero** and **Sapling** AI detection with caching
 - **Gemini-based Quality Checks** (semantic meaning, citations, grammar)
+- **Gemini-based Style Adherence** (optional; shown only when present in results)
 - **Statistical Analysis** (mean, median, percentiles, zero-shot success rates)
 
 ### 💻 Modern Web Interface

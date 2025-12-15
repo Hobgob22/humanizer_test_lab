@@ -114,6 +114,10 @@ def init_db():
                     include_doc_mode INTEGER DEFAULT 1,
                     use_gptzero INTEGER DEFAULT 1,
                     use_sapling INTEGER DEFAULT 1,
+                    user_style_profile TEXT,
+                    user_style_profile_mode TEXT,
+                    use_style_adherence INTEGER DEFAULT 0,
+                    user_style_models TEXT DEFAULT '[]',
                     error TEXT,
                     results TEXT,
                     logs TEXT
@@ -139,6 +143,22 @@ def init_db():
             if 'use_sapling' not in existing_columns:
                 conn.execute("ALTER TABLE jobs ADD COLUMN use_sapling INTEGER DEFAULT 1")
                 print("[JOB_MANAGER] Added column: use_sapling", flush=True)
+            
+            if 'user_style_profile' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN user_style_profile TEXT")
+                print("[JOB_MANAGER] Added column: user_style_profile", flush=True)
+            
+            if 'user_style_profile_mode' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN user_style_profile_mode TEXT")
+                print("[JOB_MANAGER] Added column: user_style_profile_mode", flush=True)
+            
+            if 'use_style_adherence' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN use_style_adherence INTEGER DEFAULT 0")
+                print("[JOB_MANAGER] Added column: use_style_adherence", flush=True)
+            
+            if 'user_style_models' not in existing_columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN user_style_models TEXT DEFAULT '[]'")
+                print("[JOB_MANAGER] Added column: user_style_models", flush=True)
             
             # Add active_docs column if it doesn't exist
             if 'active_docs' not in existing_columns:
@@ -189,7 +209,11 @@ def create_job(
     total_docs: int,
     include_doc_mode: bool = True,
     use_gptzero: bool = True,
-    use_sapling: bool = True
+    use_sapling: bool = True,
+    user_style_profile: Optional[str] = None,
+    user_style_profile_mode: Optional[str] = None,
+    use_style_adherence: bool = False,
+    user_style_models: Optional[List[str]] = None
 ) -> str:
     """Create a new job and return its ID."""
     import random
@@ -219,12 +243,15 @@ def create_job(
                 conn.execute("""
                     INSERT INTO jobs (
                         job_id, run_name, status, created_at, total_docs,
-                        folders, models, iterations, doc_counts, include_doc_mode, use_gptzero, use_sapling
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        folders, models, iterations, doc_counts, include_doc_mode, use_gptzero, use_sapling,
+                        user_style_profile, user_style_profile_mode, use_style_adherence, user_style_models
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     job_id, run_name, JobStatus.PENDING.value, timestamp, total_docs,
                     json.dumps(folders), json.dumps(models), iterations,
-                    json.dumps(doc_counts), int(include_doc_mode), int(use_gptzero), int(use_sapling)
+                    json.dumps(doc_counts), int(include_doc_mode), int(use_gptzero), int(use_sapling),
+                    user_style_profile, user_style_profile_mode, int(use_style_adherence),
+                    json.dumps(user_style_models or [])
                 ))
                 conn.commit()
             
@@ -467,7 +494,11 @@ def _run_benchmark_job(
     doc_counts: Dict[str, int],
     include_doc_mode: bool = True,
     use_gptzero: bool = True,
-    use_sapling: bool = True
+    use_sapling: bool = True,
+    user_style_profile: Optional[str] = None,
+    user_style_profile_mode: Optional[str] = None,
+    use_style_adherence: bool = False,
+    user_style_models: Optional[List[str]] = None
 ):
     """Background worker function for running benchmarks."""
     print(f"[BACKGROUND] [START] Starting background benchmark job: {job_id}", flush=True)
@@ -533,7 +564,11 @@ def _run_benchmark_job(
                     iterations,
                     include_doc_mode=include_doc_mode,  # Pass the humanization mode parameter
                     use_gptzero=use_gptzero,           # Pass detector selection
-                    use_sapling=use_sapling            # Pass detector selection
+                    use_sapling=use_sapling,           # Pass detector selection
+                    user_style_profile=user_style_profile,
+                    user_style_profile_mode=user_style_profile_mode,
+                    use_style_adherence=use_style_adherence,
+                    user_style_models=user_style_models or []
                 )
                 return doc_path, res, None
             except Exception as exc:
@@ -685,7 +720,11 @@ def start_benchmark_job(
     doc_counts: Dict[str, int],
     include_doc_mode: bool = True,
     use_gptzero: bool = True,
-    use_sapling: bool = True
+    use_sapling: bool = True,
+    user_style_profile: Optional[str] = None,
+    user_style_profile_mode: Optional[str] = None,
+    use_style_adherence: bool = False,
+    user_style_models: Optional[List[str]] = None
 ) -> str:
     """Start a benchmark job in the background and return the job ID."""
     print(f"[JOB_MANAGER] [CREATE] Creating job record for: {run_name}", flush=True)
@@ -700,7 +739,11 @@ def start_benchmark_job(
         total_docs=len(docs),
         include_doc_mode=include_doc_mode,
         use_gptzero=use_gptzero,
-        use_sapling=use_sapling
+        use_sapling=use_sapling,
+        user_style_profile=user_style_profile,
+        user_style_profile_mode=user_style_profile_mode,
+        use_style_adherence=use_style_adherence,
+        user_style_models=user_style_models
     )
     
     print(f"[JOB_MANAGER] [OK] Created job record: {job_id}", flush=True)
@@ -709,7 +752,7 @@ def start_benchmark_job(
     # Start background thread
     thread = threading.Thread(
         target=_run_benchmark_job,
-        args=(job_id, run_name, docs, models, iterations, folders, doc_counts, include_doc_mode, use_gptzero, use_sapling),
+        args=(job_id, run_name, docs, models, iterations, folders, doc_counts, include_doc_mode, use_gptzero, use_sapling, user_style_profile, user_style_profile_mode, use_style_adherence, user_style_models),
         daemon=True,
         name=f"benchmark-{job_id}"
     )

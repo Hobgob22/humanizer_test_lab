@@ -103,6 +103,85 @@ class APIClient {
     return response.data;
   }
 
+  async getPricing() {
+    const response = await this.client.get("/api/pricing/");
+    return response.data;
+  }
+
+  async generateWritingProfile({
+    modelId,
+    sampleText,
+    reasoningEffort,
+    thinkingMode,
+    deepThink,
+    thinkingBudget,
+    files,
+    signal,
+  }) {
+    const formData = new FormData();
+    formData.append("model_id", modelId);
+    if (sampleText) {
+      formData.append("sample_text", sampleText);
+    }
+    if (reasoningEffort) {
+      formData.append("reasoning_effort", reasoningEffort);
+    }
+    if (thinkingMode) {
+      formData.append("thinking_mode", thinkingMode);
+    }
+    formData.append("deep_think", deepThink ? "true" : "false");
+    if (thinkingBudget !== undefined && thinkingBudget !== null && thinkingBudget !== "") {
+      formData.append("thinking_budget", String(thinkingBudget));
+    }
+    (files || []).forEach((file) => {
+      formData.append("files", file);
+    });
+
+    const response = await this.client.post("/api/writing-profile/generate", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+      signal,
+    });
+    return response.data;
+  }
+
+  async humanizeWithProfile({ text, modelId, writingProfile, profileMode = "user", signal }) {
+    const response = await this.client.post("/api/writing-profile/humanize", {
+      text,
+      model: modelId,
+      writing_profile: writingProfile,
+      profile_mode: profileMode,
+    }, { signal });
+    return response.data;
+  }
+
+  async checkAiScore({ text, version, skipCache = false, signal }) {
+    const response = await this.client.post("/api/writing-profile/ai-score", {
+      text,
+      version,
+      skip_cache: skipCache,
+    }, { signal });
+    return response.data;
+  }
+
+  async runQualityCheck({ originalText, humanizedText, signal }) {
+    const response = await this.client.post("/api/writing-profile/quality", {
+      original_text: originalText,
+      humanized_text: humanizedText,
+    }, { signal });
+    return response.data;
+  }
+
+  async checkStyleAdherence({ writingProfile, originalText, humanizedText, signal }) {
+    const response = await this.client.post("/api/writing-profile/style-adherence", {
+      writing_profile: writingProfile,
+      original_text: originalText,
+      humanized_text: humanizedText,
+    }, { signal });
+    return response.data;
+  }
+
   // WebSocket
   createWebSocket() {
     const wsUrl = API_BASE_URL.replace("http", "ws");

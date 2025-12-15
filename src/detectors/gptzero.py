@@ -21,7 +21,7 @@ from ..rate_limiter import wait as _rate_wait
 @cached("gptzero")
 def detect_ai(
     text: str,
-    version: str = "2025-10-30-base",
+    version: str = "2025-11-28-base",
     *,
     skip_cache: bool = False,  # flag consumed by @cached
 ):

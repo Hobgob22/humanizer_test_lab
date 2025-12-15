@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import os
 
-from src.api.routes import jobs, runs, documents, statistics
+from src.api.routes import jobs, runs, documents, statistics, writing_profile, pricing
 from src.api.websocket import router as websocket_router
 from src.job_manager import init_db as init_job_db
 from src.results_db import _conn as get_runs_db
@@ -71,6 +71,8 @@ app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(statistics.router, prefix="/api/statistics", tags=["statistics"])
 app.include_router(websocket_router, prefix="/api", tags=["websocket"])
+app.include_router(writing_profile.router, prefix="/api/writing-profile", tags=["writing-profile"])
+app.include_router(pricing.router, prefix="/api/pricing", tags=["pricing"])
 
 @app.get("/api/health")
 async def health():

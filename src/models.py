@@ -15,17 +15,25 @@ MODEL_REGISTRY = {
     "gpt-4.1":            {"provider": "openai", "model": "gpt-4.1",      "prompt_id": "default", "base_model": "gpt-4.1"},
     "gpt-4.1-mini":       {"provider": "openai", "model": "gpt-4.1-mini", "prompt_id": "default", "base_model": "gpt-4.1-mini"},
     "gpt-4o":             {"provider": "openai", "model": "gpt-4o",       "prompt_id": "default", "base_model": "gpt-4o"},
+    "kimi-k2":            {"provider": "groq",   "model": "moonshotai/kimi-k2-instruct-0905", "prompt_id": "default", "base_model": "kimi-k2"},
+    "gpt-5":              {"provider": "openai", "model": "gpt-5",        "prompt_id": "default", "base_model": "gpt-5"},
+    "gpt-5-mini":         {"provider": "openai", "model": "gpt-5-mini",   "prompt_id": "default", "base_model": "gpt-5-mini"},
+    "gpt-5-nano":         {"provider": "openai", "model": "gpt-5-nano",   "prompt_id": "default", "base_model": "gpt-5-nano"},
+    "gpt-5.1":            {"provider": "openai", "model": "gpt-5.1",      "prompt_id": "default", "base_model": "gpt-5.1"},
 
     # ---- Claude --------------------------------------------------------
     "claude-sonnet-4":       {"provider": "claude", "model": "claude-sonnet-4-20250514",    "prompt_id": "default", "base_model": "claude"},
     "claude-sonnet-3.7":     {"provider": "claude", "model": "claude-3-7-sonnet-latest",   "prompt_id": "default", "base_model": "claude"},
     "claude-haiku-3.5":      {"provider": "claude", "model": "claude-3-5-haiku-latest",    "prompt_id": "default", "base_model": "claude"},
+    "claude-sonnet-4.5":     {"provider": "claude", "model": "claude-sonnet-4-5",          "prompt_id": "default", "base_model": "claude"},
+    "claude-haiku-4.5":      {"provider": "claude", "model": "claude-haiku-4-5",           "prompt_id": "default", "base_model": "claude"},
 
     # ---- Gemini --------------------------------------------------------
     "gemini-2.0-flash":        {"provider": "gemini", "model": "gemini-2.0-flash",              "prompt_id": "default", "base_model": "gemini"},
     "gemini-2.0-flash-lite":   {"provider": "gemini", "model": "gemini-2.0-flash-lite",         "prompt_id": "default", "base_model": "gemini"},
-    "gemini-2.5-flash":        {"provider": "gemini", "model": "gemini-2.5-flash-preview-05-20", "prompt_id": "default", "base_model": "gemini"},
-    "gemini-2.5-pro":        {"provider": "gemini", "model": "gemini-2.5-pro", "prompt_id": "default", "base_model": "gemini"},
+    "gemini-2.5-flash":        {"provider": "gemini", "model": "gemini-2.5-flash",          "prompt_id": "default", "base_model": "gemini"},  # Latest experimental
+    "gemini-2.5-pro":          {"provider": "gemini", "model": "gemini-2.5-pro", "prompt_id": "default", "base_model": "gemini"},  # Thinking model
+    "gemini-3-pro":            {"provider": "gemini", "model": "gemini-3-pro-preview",               "prompt_id": "default", "base_model": "gemini"},  # Latest December experimental
 
     # ---- our fine-tunes (OLD GENERATION) -----------------------------------------------
     "gpt-4o-old-model":          {"provider": "openai_ft", "model": "ft:gpt-4o-mini-2024-07-18:litero-ai:v4-short-simple:9oaYlNl2",                              "prompt_id": "legacy-finetuned", "base_model": "gpt-4o-mini"},
@@ -187,4 +195,200 @@ MODEL_REGISTRY = {
     "raw-e8-b8-m025-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:raw-e8-b8-m025-v20:CaS2nu1l:ckpt-step-784", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4o"},
     "raw-e8-b8-m025-v20":       {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:raw-e8-b8-m025-v20:CaS2nSDe", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4o"},
 
+    # ==================== NEW DPO MODELS (Batch 2) ====================
+    # ---- gpt-4.1-mini based models ----
+    # Model 1: dpo-41m-min-e3-b32-m10-k05-v10
+    "dpo-41m-min-e3-b32-m10-k05-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m10-k05-v10:CgqrRupO:ckpt-step-27", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b32-m10-k05-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m10-k05-v10:CgqrSdJo:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b32-m10-k05-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m10-k05-v10:CgqrSkIF", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+
+    # Model 2: dpo-41m-raw-e4-b32-m08-k08-v10
+    "dpo-41m-raw-e4-b32-m08-k08-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e4-b32-m08-k08-v10:Chx7RaD0:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-raw-e4-b32-m08-k08-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e4-b32-m08-k08-v10:Chx7S16B:ckpt-step-81", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-raw-e4-b32-m08-k08-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e4-b32-m08-k08-v10:Chx7SVST", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+
+    # Model 3: dpo-41m-cmp-e3-b32-m10-k08-v15
+    "dpo-41m-cmp-e3-b32-m10-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-cmp-e3-b32-m10-k08-v15:ChxQgnW0:ckpt-step-26", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-cmp-e3-b32-m10-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-cmp-e3-b32-m10-k08-v15:ChxQhduq:ckpt-step-52", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-cmp-e3-b32-m10-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-cmp-e3-b32-m10-k08-v15:ChxQhRw8", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1-mini"},
+
+    # Model 4: dpo-41m-rch-e4-b32-m06-k08-v15
+    "dpo-41m-rch-e4-b32-m06-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-rch-e4-b32-m06-k08-v15:Chw9oUHw:ckpt-step-52", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-rch-e4-b32-m06-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-rch-e4-b32-m06-k08-v15:Chw9pyRF:ckpt-step-78", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-rch-e4-b32-m06-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-rch-e4-b32-m06-k08-v15:Chw9qN1z", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-mini"},
+
+    # ---- gpt-4.1 based models ----
+    # Model 5: dpo-41-min-e3-b16-m08-k05-v10
+    "dpo-41-min-e3-b16-m08-k05-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k05-v10:CgrtS8V3:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b16-m08-k05-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k05-v10:CgrtSEIa:ckpt-step-108", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b16-m08-k05-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k05-v10:CgrtSQIo", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+
+    # Model 6: dpo-41-cmp-e4-b16-m06-k08-v15
+    "dpo-41-cmp-e4-b16-m06-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-cmp-e4-b16-m06-k08-v15:Ci5BliaW:ckpt-step-102", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_binned", "base_model": "gpt-4.1"},
+    "dpo-41-cmp-e4-b16-m06-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-cmp-e4-b16-m06-k08-v15:Ci5BmKuA:ckpt-step-153", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_binned", "base_model": "gpt-4.1"},
+    "dpo-41-cmp-e4-b16-m06-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-cmp-e4-b16-m06-k08-v15:Ci5BmBWl", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "ai_score_binned", "base_model": "gpt-4.1"},
+
+    # Model 7: dpo-41-rch-e3-b12-m10-k10-v10
+    "dpo-41-rch-e3-b12-m10-k10-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-rch-e3-b12-m10-k10-v10:ChxNBU3m:ckpt-step-72", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1"},
+    "dpo-41-rch-e3-b12-m10-k10-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-rch-e3-b12-m10-k10-v10:ChxNCq4h:ckpt-step-144", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1"},
+    "dpo-41-rch-e3-b12-m10-k10-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-rch-e3-b12-m10-k10-v10:ChxNCnaB", "prompt_id": "dynamic", "system_prompt": "rich_prompt_standard", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4.1"},
+
+    # Model 8: dpo-41-raw-e5-b16-m05-k08-v20
+    "dpo-41-raw-e5-b16-m05-k08-v20:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e5-b16-m05-k08-v20:Chz9w8jc:ckpt-step-144", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+    "dpo-41-raw-e5-b16-m05-k08-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e5-b16-m05-k08-v20:Chz9xt1n:ckpt-step-192", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+    "dpo-41-raw-e5-b16-m05-k08-v20":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e5-b16-m05-k08-v20:Chz9xgZc", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+
+    # ---- gpt-4o based models ----
+    # Model 9: dpo-4o-min-e3-b16-m08-k05-v10
+    "dpo-4o-min-e3-b16-m08-k05-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m08-k05-v10:Cgt0Y027:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b16-m08-k05-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m08-k05-v10:Cgt0ZKPO:ckpt-step-108", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b16-m08-k05-v10":       {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m08-k05-v10:Cgt0ZHQh", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+
+    # ---- gpt-4.1-nano based models ----
+    # Model 11: dpo-nano-min-e3-b32-m10-k05-v10
+    "dpo-nano-min-e3-b32-m10-k05-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b32-m10-k05-v10:Cgr1jneM:ckpt-step-27", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-min-e3-b32-m10-k05-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b32-m10-k05-v10:Cgr1kpQS:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-min-e3-b32-m10-k05-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b32-m10-k05-v10:Cgr1keHI", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+
+    # Model 12: dpo-nano-cmp-e4-b32-m08-k08-v15
+    "dpo-nano-cmp-e4-b32-m08-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k08-v15:Ci0SZqNW:ckpt-step-52", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-cmp-e4-b32-m08-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k08-v15:Ci0SazSy:ckpt-step-78", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-cmp-e4-b32-m08-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k08-v15:Ci0SaiP7", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+
+    # ---- More gpt-4.1-mini based models ----
+    # Model 13: dpo-41m-min-e3-b8-m06-k08-v15
+    "dpo-41m-min-e3-b8-m06-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b8-m06-k08-v15:CgrsffSJ:ckpt-step-102", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b8-m06-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b8-m06-k08-v15:CgrsgAH2:ckpt-step-204", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b8-m06-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b8-m06-k08-v15:Cgrsh1mU", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+
+    # Model 14: dpo-41m-raw-e3-b10-m04-k10-v20
+    "dpo-41m-raw-e3-b10-m04-k10-v20:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e3-b10-m04-k10-v20:ChxhTbWz:ckpt-step-77", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-raw-e3-b10-m04-k10-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e3-b10-m04-k10-v20:ChxhVl9G:ckpt-step-154", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-raw-e3-b10-m04-k10-v20":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-raw-e3-b10-m04-k10-v20:ChxhVpDC", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-mini"},
+
+    # ---- More gpt-4.1 based models ----
+    # Model 15: dpo-41-min-e3-b8-m05-k08-v15
+    "dpo-41-min-e3-b8-m05-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b8-m05-k08-v15:CgsysQGZ:ckpt-step-102", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b8-m05-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b8-m05-k08-v15:CgsytkYD:ckpt-step-204", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b8-m05-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b8-m05-k08-v15:CgsytaXZ", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+
+    # Model 16: dpo-41-raw-e4-b10-m04-k10-v20
+    "dpo-41-raw-e4-b10-m04-k10-v20:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e4-b10-m04-k10-v20:ChznIwO7:ckpt-step-154", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+    "dpo-41-raw-e4-b10-m04-k10-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e4-b10-m04-k10-v20:ChznJ79G:ckpt-step-231", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+    "dpo-41-raw-e4-b10-m04-k10-v20":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-raw-e4-b10-m04-k10-v20:ChznKpU7", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1"},
+
+    # ---- More gpt-4o based models ----
+    # Model 17: dpo-4o-min-e3-b8-m05-k08-v15
+    "dpo-4o-min-e3-b8-m05-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b8-m05-k08-v15:CguJJHO2:ckpt-step-102", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b8-m05-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b8-m05-k08-v15:CguJKMLE:ckpt-step-204", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b8-m05-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b8-m05-k08-v15:CguJKBpN", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4o"},
+
+    # Model 18: dpo-4o-raw-e4-b6-m04-k10-v20
+    "dpo-4o-raw-e4-b6-m04-k10-v20:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-raw-e4-b6-m04-k10-v20:Ci2zIszF:ckpt-step-254", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4o"},
+    "dpo-4o-raw-e4-b6-m04-k10-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-raw-e4-b6-m04-k10-v20:Ci2zJe4I:ckpt-step-381", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4o"},
+    "dpo-4o-raw-e4-b6-m04-k10-v20":       {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-raw-e4-b6-m04-k10-v20:Ci2zJyg6", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4o"},
+
+    # ---- More gpt-4.1-nano based models ----
+    # Model 19: dpo-nano-min-e3-b8-m07-k05-v10
+    "dpo-nano-min-e3-b8-m07-k05-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b8-m07-k05-v10:ChwOSzLr:ckpt-step-108", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-min-e3-b8-m07-k05-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b8-m07-k05-v10:ChwOTX7v:ckpt-step-216", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-min-e3-b8-m07-k05-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-min-e3-b8-m07-k05-v10:ChwOTCCo", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_binned", "base_model": "gpt-4.1-nano"},
+
+    # Model 20: dpo-nano-raw-e4-b10-m05-k08-v15
+    "dpo-nano-raw-e4-b10-m05-k08-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-raw-e4-b10-m05-k08-v15:ChxToVV6:ckpt-step-162", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-raw-e4-b10-m05-k08-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-raw-e4-b10-m05-k08-v15:ChxTq0bm:ckpt-step-243", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-raw-e4-b10-m05-k08-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-raw-e4-b10-m05-k08-v15:ChxTq5T3", "prompt_id": "dynamic", "system_prompt": "none", "scores_in_prompt": "none", "base_model": "gpt-4.1-nano"},
+
+    # ---- More gpt-4.1-mini based models ----
+    # Model 21: dpo-41m-min-e3-b32-m08-k03-v10
+    "dpo-41m-min-e3-b32-m08-k03-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m08-k03-v10:CgrK6Hsp:ckpt-step-27", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b32-m08-k03-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m08-k03-v10:CgrK7pEN:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+    "dpo-41m-min-e3-b32-m08-k03-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-41m-min-e3-b32-m08-k03-v10:CgrK7CD2", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-mini"},
+
+    # ---- More gpt-4.1 based models ----
+    # Model 22: dpo-41-min-e3-b16-m08-k03-v10
+    "dpo-41-min-e3-b16-m08-k03-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k03-v10:Cgs1Ks22:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b16-m08-k03-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k03-v10:Cgs1LtiC:ckpt-step-108", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+    "dpo-41-min-e3-b16-m08-k03-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-2025-04-14:litero-ai:dpo-41-min-e3-b16-m08-k03-v10:Cgs1LZbO", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1"},
+
+    # ---- More gpt-4o based models ----
+    # Model 23: dpo-4o-min-e3-b16-m06-k03-v10
+    "dpo-4o-min-e3-b16-m06-k03-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m06-k03-v10:ChxDLwJQ:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b16-m06-k03-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m06-k03-v10:ChxDMCXy:ckpt-step-108", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4o"},
+    "dpo-4o-min-e3-b16-m06-k03-v10":       {"provider": "openai_ft", "model": "ft:gpt-4o-2024-08-06:litero-ai:dpo-4o-min-e3-b16-m06-k03-v10:ChxDN78Q", "prompt_id": "dynamic", "system_prompt": "minimal_style_guardrails", "scores_in_prompt": "ai_score_raw", "base_model": "gpt-4o"},
+
+    # ---- More gpt-4.1-nano based models ----
+    # Model 24: dpo-nano-cmp-e4-b32-m08-k03-v10
+    "dpo-nano-cmp-e4-b32-m08-k03-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k03-v10:Ci0TNVjM:ckpt-step-54", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-cmp-e4-b32-m08-k03-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k03-v10:Ci0TNLJi:ckpt-step-81", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+    "dpo-nano-cmp-e4-b32-m08-k03-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-nano-2025-04-14:litero-ai:dpo-nano-cmp-e4-b32-m08-k03-v10:Ci0TOjeI", "prompt_id": "dynamic", "system_prompt": "compact_guidelines_rubric", "scores_in_prompt": "both_raw", "base_model": "gpt-4.1-nano"},
+
+    # ---- DPO fine-tunes based on hum40-naive-auto ----
+    # Model 25: dpo-h40-e2-b8-m08-b30-v10
+    "dpo-h40-e2-b8-m08-b30-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e2-b8-m08-b30-v10:CjPwzEcd:ckpt-step-107", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e2-b8-m08-b30-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e2-b8-m08-b30-v10:CjPwzMCd", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 26: dpo-h40-e3-b8-m10-b25-v10
+    "dpo-h40-e3-b8-m10-b25-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b25-v10:CkVFxkZy:ckpt-step-107", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-b25-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b25-v10:CkVFyBpS:ckpt-step-214", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-b25-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b25-v10:CkVFzeSc", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 27: dpo-h40-e3-b8-m10-b15-v10
+    "dpo-h40-e3-b8-m10-b15-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b15-v10:CjSDbDVc:ckpt-step-107", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-b15-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b15-v10:CjSDcxCD:ckpt-step-214", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-b15-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-b15-v10:CjSDdZrK", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 28: dpo-h40-e3-b12-m10-b25-v10
+    "dpo-h40-e3-b12-m10-b25-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b12-m10-b25-v10:CkUsJZDX:ckpt-step-71", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b12-m10-b25-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b12-m10-b25-v10:CkUsKXpn:ckpt-step-142", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b12-m10-b25-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b12-m10-b25-v10:CkUsK7jy", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 29: dpo-h40-e4-b12-m07-b35-v15
+    "dpo-h40-e4-b12-m07-b35-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m07-b35-v15:CkV9YrUG:ckpt-step-134", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b12-m07-b35-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m07-b35-v15:CkV9ZfOs:ckpt-step-201", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b12-m07-b35-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m07-b35-v15:CkV9ZSO1", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 30: dpo-h40-e4-b16-m05-b40-v15
+    "dpo-h40-e4-b16-m05-b40-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b16-m05-b40-v15:CkVAxv7Y:ckpt-step-102", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b16-m05-b40-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b16-m05-b40-v15:CkVAxla0:ckpt-step-153", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b16-m05-b40-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b16-m05-b40-v15:CkVAzLeV", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 31: dpo-h40-e3-b8-m15-b20-v10
+    "dpo-h40-e3-b8-m15-b20-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m15-b20-v10:CkViUXDQ:ckpt-step-107", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m15-b20-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m15-b20-v10:CkViW86T:ckpt-step-214", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m15-b20-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m15-b20-v10:CkViWsWN", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 32: dpo-h40-e5-b8-m10-b20-v20
+    "dpo-h40-e5-b8-m10-b20-v20:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e5-b8-m10-b20-v20:CkWZmXAM:ckpt-step-285", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e5-b8-m10-b20-v20:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e5-b8-m10-b20-v20:CkWZnkbw:ckpt-step-380", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e5-b8-m10-b20-v20":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e5-b8-m10-b20-v20:CkWZnMoi", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 33: dpo-h40-e3-b8-m10-bauto-v10
+    "dpo-h40-e3-b8-m10-bauto-v10:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-bauto-v10:CkW6CjVW:ckpt-step-107", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-bauto-v10:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-bauto-v10:CkW6DKd8:ckpt-step-214", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e3-b8-m10-bauto-v10":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e3-b8-m10-bauto-v10:CkW6ENrR", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
+    # Model 34: dpo-h40-e4-b12-m08-bauto-v15
+    "dpo-h40-e4-b12-m08-bauto-v15:ckpt1": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m08-bauto-v15:CkW8IZTh:ckpt-step-134", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b12-m08-bauto-v15:ckpt2": {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m08-bauto-v15:CkW8JSWN:ckpt-step-201", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+    "dpo-h40-e4-b12-m08-bauto-v15":       {"provider": "openai_ft", "model": "ft:gpt-4.1-mini-2025-04-14:litero-ai:dpo-h40-e4-b12-m08-bauto-v15:CkW8JC1U", "prompt_id": "default", "base_model": "hum40-naive-auto"},
+
 }
+
+def get_model_info(model_id: str) -> dict:
+    """
+    Get model metadata from registry, or return a default config for custom models.
+    
+    If the model_id is found in MODEL_REGISTRY, returns that entry.
+    Otherwise, assumes it's a custom OpenAI fine-tune and returns a default config.
+    """
+    if model_id in MODEL_REGISTRY:
+        return MODEL_REGISTRY[model_id]
+    
+    # Default config for custom/unknown models
+    return {
+        "provider": "openai_ft",  # Default to fine-tune provider
+        "model": model_id,        # Use the ID as the model name
+        "prompt_id": "default",   # Use default prompts
+        "base_model": "custom"
+    }

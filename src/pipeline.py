@@ -33,7 +33,7 @@ from concurrent.futures import (
     FIRST_COMPLETED,
 )
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple, DefaultDict
+from typing import Callable, Dict, List, Tuple, DefaultDict, Optional
 from collections import defaultdict
 
 from requests.exceptions import RequestException
@@ -50,9 +50,11 @@ from .config import (
 from .detectors import gptzero, sapling
 from .docx_utils import extract_paragraphs_with_type
 from .evaluation.quality import quality
+from .evaluation.style_adherence import evaluate_style_adherence
 from .humanizers.humanizer import humanize, _select_prompt
-from .models import MODEL_REGISTRY
+from .models import MODEL_REGISTRY, get_model_info
 from .paths import RESULTS
+from .writing_profile import convert_profile_to_generation_prompt, AcademicWritingProfile
 
 import json
 from datetime import datetime
@@ -436,16 +438,16 @@ def _batch_quality_check(pairs: List[Tuple[str, str]], log=None):
     return out
 
 # ═══════════════ 6 · Humaniser helpers ═══════════════════════════════
-def _humanize_doc(text: str, model: str, log=None) -> str:
+def _humanize_doc(text: str, model: str, log=None, system_prefix=None, user_prefix=None) -> str:
     _stage(f"Doc humanization START • {model}", log)
     start_time = time.time()
     # No timeout wrapper needed - humanizer has its own timeout and rate limiting
-    out = humanize(text, model, "doc", log=log)
+    out = humanize(text, model, "doc", log=log, system_prefix=system_prefix, user_prefix=user_prefix)
     elapsed = time.time() - start_time
     _stage(f"Doc humanization DONE • {model} • {elapsed:.1f}s", log)
     return out
 
-def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> Tuple[List[str], List[Dict]]:
+def _humanize_paragraphs(paragraphs: List[str], model: str, log=None, system_prefix=None, user_prefix=None) -> Tuple[List[str], List[Dict]]:
     """
     Paragraph-wise humanisation with mismatch tracking and pair storage.
     Returns (humanized_paragraphs, paragraph_pair_info)
@@ -464,7 +466,7 @@ def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> Tuple[L
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         fut2idx = {
-            pool.submit(humanize, p, model, "para"): i
+            pool.submit(humanize, p, model, "para", system_prefix=system_prefix, user_prefix=user_prefix): i
             for i, p in enumerate(paragraphs)
         }
         completed = 0
@@ -490,7 +492,7 @@ def _humanize_paragraphs(paragraphs: List[str], model: str, log=None) -> Tuple[L
                 if is_mismatch and IS_DEVELOPMENT:
                     try:
                         # Get model metadata to extract prompts
-                        meta = MODEL_REGISTRY.get(model, {})
+                        meta = get_model_info(model)
                         prompt_id = meta.get("prompt_id", "default")
                         system_prompt_type = meta.get("system_prompt")
 
@@ -632,6 +634,9 @@ def _generate_single_draft(
     include_doc: bool = True,  # NEW: control doc mode
     is_para_folder: bool = False,  # NEW: flag for para folders
     log=None,
+    user_style_profile=None,
+    user_style_profile_mode=None,
+    user_style_models=None,
 ):
     """
     Generate one draft. 
@@ -643,10 +648,30 @@ def _generate_single_draft(
     
     specs = []
     
+    # Prepare profile prefixes if this model is from user-style section
+    system_prefix = None
+    user_prefix = None
+    if user_style_models and model in user_style_models and user_style_profile:
+        try:
+            # Parse the profile JSON
+            profile_data = json.loads(user_style_profile) if isinstance(user_style_profile, str) else user_style_profile
+            profile_obj = AcademicWritingProfile(**profile_data)
+            profile_instruction = convert_profile_to_generation_prompt(profile_obj)
+            
+            # Determine where to inject the profile
+            if user_style_profile_mode == "system":
+                system_prefix = profile_instruction
+                _maybe_log(f"Using writing profile in system prompt for {model}", log)
+            else:  # Default to user prompt
+                user_prefix = profile_instruction
+                _maybe_log(f"Using writing profile in user prompt for {model}", log)
+        except Exception as e:
+            _maybe_log(f"⚠️ Failed to parse writing profile for {model}: {e}", log)
+    
     # For para folders: use para mode prompt for the single paragraph
     if is_para_folder:
         # These folders contain single paragraphs, so use para mode
-        hum_text = humanize(orig_text, model, "para", log=log)
+        hum_text = humanize(orig_text, model, "para", log=log, system_prefix=system_prefix, user_prefix=user_prefix)
         
         # Analyze the result for paragraph-level mismatch
         received_paras = [p.strip() for p in hum_text.split('\n\n') if p.strip()]
@@ -695,7 +720,7 @@ def _generate_single_draft(
         
         # ── Doc-level (optional) ───────────────────────────────────────────────────
         if include_doc:
-            hum_doc = _humanize_doc(orig_text, model, log)
+            hum_doc = _humanize_doc(orig_text, model, log, system_prefix=system_prefix, user_prefix=user_prefix)
             doc_paras = [p.strip() for p in hum_doc.splitlines() if p.strip()]
             _maybe_log(f"Doc-mode complete • {model} • {len(doc_paras)} paragraphs", log)
 
@@ -711,7 +736,7 @@ def _generate_single_draft(
         if include_para:
             content_paras = [p["text"] for p in para_objs if p["type"] == "content"]
             if content_paras:
-                hum_para_content, para_pair_info = _humanize_paragraphs(content_paras, model, log)
+                hum_para_content, para_pair_info = _humanize_paragraphs(content_paras, model, log, system_prefix=system_prefix, user_prefix=user_prefix)
                 hum_para_paras   = _merge_heading_content(para_objs, hum_para_content)
                 _maybe_log(f"Para-mode complete • {model} • {len(hum_para_paras)} paragraphs", log)
 
@@ -737,7 +762,9 @@ def _generate_single_draft(
 
 def _generate_all_drafts(models, iterations, orig_text, para_objs,
                          log=None, *, include_para: bool = True,
-                         include_doc: bool = True, is_para_folder: bool = False):
+                         include_doc: bool = True, is_para_folder: bool = False,
+                         user_style_profile=None, user_style_profile_mode=None,
+                         user_style_models=None):
     out: List[Dict] = []
     total_tasks = len(models) * iterations
     max_workers = min(HUMANIZER_MAX_WORKERS, total_tasks)
@@ -767,6 +794,9 @@ def _generate_all_drafts(models, iterations, orig_text, para_objs,
                     include_doc=include_doc,
                     is_para_folder=is_para_folder,
                     log=log,
+                    user_style_profile=user_style_profile,
+                    user_style_profile_mode=user_style_profile_mode,
+                    user_style_models=user_style_models,
                 )
                 fut_to_info[fut] = (m, i)
 
@@ -1261,7 +1291,11 @@ def run_test(doc_path: Path, models: List[str]|None=None,
              max_retries: int = 5,
              include_doc_mode: bool = True,
              use_gptzero: bool = True,
-             use_sapling: bool = True):  # NEW detector selection parameters
+             use_sapling: bool = True,  # NEW detector selection parameters
+             user_style_profile: Optional[str] = None,
+             user_style_profile_mode: Optional[str] = None,
+             use_style_adherence: bool = False,
+             user_style_models: Optional[List[str]] = None):
     _stage("[Pipeline] run_test START", logger)
     _maybe_log("="*60, logger)
     _maybe_log(f"Processing document: {doc_path.name}", logger)
@@ -1305,6 +1339,9 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                     include_para=False,  # Not regular para mode
                     include_doc=False,   # Not doc mode
                     is_para_folder=True, # Special handling
+                    user_style_profile=user_style_profile,
+                    user_style_profile_mode=user_style_profile_mode,
+                    user_style_models=user_style_models,
                 )
             else:
                 # Regular folders: respect include_doc_mode setting
@@ -1314,6 +1351,9 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                     include_para=True,
                     include_doc=include_doc_mode,
                     is_para_folder=False,
+                    user_style_profile=user_style_profile,
+                    user_style_profile_mode=user_style_profile_mode,
+                    user_style_models=user_style_models,
                 )
             break  # Success, exit retry loop
             
@@ -1394,6 +1434,44 @@ def run_test(doc_path: Path, models: List[str]|None=None,
                 if attempt == max_retries:
                     _maybe_log(f"⚠️ Phase 3 failed after {max_retries} attempts - continuing without quality checks", logger)
                     q_results = {}  # Continue with empty quality results
+
+    # Phase 3.5: Style adherence evaluation (only for user-style models)
+    style_adherence_results = {}
+    if use_style_adherence and user_style_profile and user_style_models:
+        _stage("Phase 3.5: Style adherence evaluation", logger)
+        user_style_set = set(user_style_models)
+        
+        # Parse the profile once
+        try:
+            profile_data = json.loads(user_style_profile) if isinstance(user_style_profile, str) else user_style_profile
+            
+            # Identify drafts that need evaluation
+            specs_to_eval = [d for d in drafts if d["model"] in user_style_set]
+            _maybe_log(f"Evaluating style adherence for {len(specs_to_eval)} drafts from user-style models", logger)
+            
+            # Run evaluations concurrently
+            with _fast_pool(max_workers=GEMINI_MAX_WORKERS) as pool:
+                fut_to_info = {}
+                for spec in specs_to_eval:
+                    key = (spec["model"], spec.get("mode", "unknown"), spec.get("iter", 0))
+                    fut = pool.submit(evaluate_style_adherence, profile_data, orig_full, spec["humanized_text"])
+                    fut_to_info[fut] = (key, spec["model"])
+                
+                completed = 0
+                for fut in as_completed(fut_to_info):
+                    key, model_name = fut_to_info[fut]
+                    completed += 1
+                    try:
+                        result = fut.result()
+                        style_adherence_results[key] = result
+                        _maybe_log(f"  ✓ [{completed}/{len(specs_to_eval)}] {model_name}: overall score = {result['overall_adherence']['score']}/10", logger)
+                    except Exception as exc:
+                        _maybe_log(f"  ❌ [{completed}/{len(specs_to_eval)}] Style adherence failed for {model_name}: {exc}", logger)
+            
+            _maybe_log(f"✓ Style adherence evaluation complete: {len(style_adherence_results)} successful", logger)
+        except Exception as exc:
+            _maybe_log(f"❌ Style adherence evaluation failed: {exc}", logger)
+            style_adherence_results = {}
 
     # Phase 4: Assembly
     _stage("Phase 4: Assembly", logger)
@@ -1478,13 +1556,18 @@ def run_test(doc_path: Path, models: List[str]|None=None,
             }
             para_details, flag_counts = [], {}
         
+        # Get style adherence result if available for this draft
+        style_key = (spec["model"], spec.get("mode", "unknown"), spec.get("iter", 0))
+        style_adherence = style_adherence_results.get(style_key)
+        
         runs.append(_pack_run(
             spec["model"], spec["mode"], spec["iter"],
             scores_before, scores_after,
             wc_before, wc_after,
             flag_counts, para_details, mismatch, hum_text,
             len(orig_paras), len(hum_paras), draft_length_deviation,
-            mismatch_reason if mismatch else None
+            mismatch_reason if mismatch else None,
+            style_adherence
         ))
 
     _stage("run_test COMPLETE", logger)
@@ -1511,8 +1594,9 @@ def _pack_run(model: str, mode: str, it: int,
               para_mismatch: bool, humanized_text: str,
               para_count_before: int, para_count_after: int,
               draft_length_deviation: float,
-              mismatch_reason: str = None):
-    return {
+              mismatch_reason: str = None,
+              style_adherence: Dict = None):
+    result = {
         "model": model, "mode": mode, "iter": it,
         "scores_before": scores_before, "scores_after": scores_after,
         "wordcount_before": wc_before, "wordcount_after": wc_after,
@@ -1522,6 +1606,12 @@ def _pack_run(model: str, mode: str, it: int,
         "draft_length_deviation": draft_length_deviation,
         "mismatch_reason": mismatch_reason,
     }
+    
+    # Add style adherence if available
+    if style_adherence:
+        result["style_adherence"] = style_adherence
+    
+    return result
 
 # ═══════════════ 12 · Sequential loader ════════════════════════════
 def load_ai_scores(doc_path: Path, log: Callable[[str], None] | None = None, max_retries: int = 3):

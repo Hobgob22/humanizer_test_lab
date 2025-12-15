@@ -3,7 +3,7 @@
 Pydantic models for API request/response schemas.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -17,6 +17,10 @@ class JobCreate(BaseModel):
     include_doc_mode: bool = True
     use_gptzero: bool = True
     use_sapling: bool = True
+    user_style_profile: Optional[str] = None
+    user_style_profile_mode: Optional[str] = None
+    use_style_adherence: bool = False
+    user_style_models: List[str] = []  # Track which models are from user-style section
 
 class JobResponse(BaseModel):
     job_id: str
@@ -89,6 +93,68 @@ class StatisticsTaskResponse(BaseModel):
 class DocumentAnalysisRequest(BaseModel):
     doc_path: str
     compare_run: Optional[str] = None
+
+# Writing profile models
+class WritingProfileResponse(BaseModel):
+    model: str
+    profile: Dict[str, Any]
+    raw_output: str
+    markdown_preview: str
+    system_prompt: str
+    user_prompt: str
+    reasoning: Dict[str, Any] = {}
+    sample_preview: str
+    sources: List[Dict[str, Any]] = []
+    pricing: Optional[Dict[str, Any]] = None
+    token_usage: Optional[Dict[str, Any]] = None
+
+
+class HumanizeRequest(BaseModel):
+    text: str
+    model: str
+    writing_profile: Dict[str, Any]
+    profile_mode: Literal["user", "system"] = "user"
+
+
+class HumanizeResponse(BaseModel):
+    model: str
+    humanized_text: str
+    instruction_preview: str
+    prompt_used: str
+    profile_summary: str
+    profile_mode: Literal["user", "system"] = "user"
+
+
+class AIScoreRequest(BaseModel):
+    text: str
+    version: Optional[str] = None
+    skip_cache: bool = False
+
+
+class AIScoreResponse(BaseModel):
+    version: str
+    completely_generated_prob: Optional[float] = None
+    raw_document: Dict[str, Any]
+
+
+class QualityCheckRequest(BaseModel):
+    original_text: str
+    humanized_text: str
+
+
+class QualityCheckResponse(BaseModel):
+    result: Dict[str, Any]
+
+
+class StyleAdherenceRequest(BaseModel):
+    writing_profile: dict
+    original_text: str
+    humanized_text: str
+
+
+class StyleAdherenceResponse(BaseModel):
+    result: Dict[str, Any]
+
 
 # WebSocket Models
 class JobUpdateMessage(BaseModel):

@@ -16,12 +16,13 @@ v1.4
 """
 
 from __future__ import annotations
-from typing import Literal, Any
+from typing import Literal, Any, Optional
 
 import random
 import time
 
 from openai import OpenAI
+from groq import Groq
 from google import genai
 from google.genai import types
 import anthropic
@@ -31,8 +32,9 @@ from ..config import (
     HUMANIZER_OPENAI_API_KEY,
     GEMINI_API_KEY,
     CLAUDE_API_KEY,
+    GROQ_API_KEY,
 )
-from ..models import MODEL_REGISTRY
+from ..models import MODEL_REGISTRY, get_model_info
 from ..prompts import (
     DEFAULT_DOC_SYSTEM_PROMPT,
     DEFAULT_PARA_SYSTEM_PROMPT,
@@ -64,6 +66,7 @@ from ..rate_limiter import wait as _rate_wait
 _openai_std = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 _openai_ft = OpenAI(api_key=HUMANIZER_OPENAI_API_KEY) if HUMANIZER_OPENAI_API_KEY else None
 _claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY else None
+_groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 if GEMINI_API_KEY:
     _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -241,6 +244,33 @@ def _gemini_call(text: str, model: str, system_prompt: str) -> str:
         return result
 
 
+def _groq_call(text: str, model: str, system_prompt: str) -> str:
+    """Groq chat completion with retries."""
+    if not _groq_client:
+        raise ValueError("Groq API key not configured")
+    for attempt in range(1, 4):
+        try:
+            _rate_wait("groq")
+            response = _groq_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.9,
+            )
+            result = response.choices[0].message.content.strip()
+            if result:
+                return result
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+        except Exception as exc:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
+    return text
+
+
 def _select_prompt(
     prompt_id: str,
     mode: Literal["doc", "para"],
@@ -294,9 +324,9 @@ def _select_prompt(
         if system_prompt == "none":
             # No system prompt
             return ""
-        elif system_prompt == "minimal_prompt":
+        elif system_prompt in ("minimal_prompt", "minimal_style_guardrails"):
             return MINIMAL_DOC_SYSTEM_PROMPT if mode == "doc" else MINIMAL_PARA_SYSTEM_PROMPT
-        elif system_prompt == "compact_prompt":
+        elif system_prompt in ("compact_prompt", "compact_guidelines_rubric"):
             return COMPACT_DOC_SYSTEM_PROMPT if mode == "doc" else COMPACT_PARA_SYSTEM_PROMPT
         elif system_prompt == "rich_prompt_standard":
             return RICH_SYSTEM_PROMPT_STANDARD_DOC if mode == "doc" else RICH_SYSTEM_PROMPT_STANDARD_PARA
@@ -380,6 +410,9 @@ def humanize(
     text: str,
     display_name: str,
     mode: Literal["doc", "para"] = "para",
+    *,
+    system_prefix: Optional[str] = None,
+    user_prefix: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
     """
@@ -397,7 +430,7 @@ def humanize(
     # Extract initial_score if provided (for dynamic prompts)
     initial_score = kwargs.pop("initial_score", None)
 
-    meta = MODEL_REGISTRY[display_name]
+    meta = get_model_info(display_name)
     provider = meta["provider"]
     model_id = meta["model"]
     prompt_id = meta["prompt_id"]
@@ -409,13 +442,21 @@ def humanize(
     scores_in_prompt = meta.get("scores_in_prompt")
 
     # Select system prompt
-    system_prompt = _select_prompt(prompt_id, mode, variant=variant, system_prompt=system_prompt_type)
+    system_prompt = _select_prompt(
+        prompt_id, mode, variant=variant, system_prompt=system_prompt_type
+    )
+    if system_prefix:
+        system_prompt = f"{system_prefix.strip()}\n\n{system_prompt}".strip()
 
     # Build user prompt (dynamic models may include scores)
     if prompt_id == "dynamic":
         user_prompt = _build_user_prompt(text, scores_in_prompt, initial_score)
     else:
-        user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+        # user_prompt = f"Please rewrite the following text to sound more human and natural while keeping all facts, meaning, and citations exactly the same:\n\n{text}"
+        user_prompt = text
+
+    if user_prefix:
+        user_prompt = f"{user_prefix.strip()}\n\n{user_prompt}".strip()
 
     if provider == "openai":
         if not _openai_std:
@@ -442,5 +483,8 @@ def humanize(
         if not _gemini_client:
             raise ValueError("Gemini API key not configured")
         return _gemini_call(user_prompt, model_id, system_prompt)
+
+    if provider == "groq":
+        return _groq_call(user_prompt, model_id, system_prompt)
 
     raise ValueError(f"Unknown provider '{provider}' for model {display_name}")

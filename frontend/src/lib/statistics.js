@@ -102,6 +102,10 @@ export const createModelComparisonTable = (stats, folder) => {
         // Citation preservation metrics (32-33)
         citationPreservedPct: s.citation_preservation_rate_avg || 100,
         citationExactPct: s.citation_exact_match_rate_avg || 100,
+
+        // Style Adherence (34)
+        styleAdherence: s.style_adherence?.overall ?? null,
+        styleAdherenceCount: s.style_adherence?.count ?? 0,
       };
 
       rows.push(row);
@@ -195,6 +199,17 @@ export const getLengthDeviationColor = (value) => {
   if (value >= 80) return "text-green-600 font-semibold";
   if (value >= 60) return "text-orange-500";
   return "text-red-600";
+};
+
+/**
+ * Get color class for style adherence score (0-10 scale, higher is better)
+ */
+export const getStyleAdherenceColor = (value) => {
+  if (value === null || value === undefined || isNaN(value)) return "";
+  if (value >= 8) return "text-green-600 font-semibold";
+  if (value >= 6) return "text-orange-500";
+  if (value < 4) return "text-red-600 font-semibold";
+  return "";
 };
 
 /**

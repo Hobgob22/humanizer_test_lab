@@ -19,10 +19,12 @@ import {
   getMissingInfoColor,
   getCitationColor,
   getLengthDeviationColor,
+  getStyleAdherenceColor,
 } from "../lib/statistics";
 import { Loader2, Download, BarChart3, Info, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 
 export function BenchmarkAnalysis() {
+  const RUNS_COLLAPSED_LIMIT = 12;
   const [runs, setRuns] = useState([]);
   const [selectedRuns, setSelectedRuns] = useState([]);
   const [statistics, setStatistics] = useState(null);
@@ -32,6 +34,7 @@ export function BenchmarkAnalysis() {
   const [mergeRuns, setMergeRuns] = useState(false);
   const [activeTab, setActiveTab] = useState("folder");
   const [deleting, setDeleting] = useState(false);
+  const [showAllRuns, setShowAllRuns] = useState(false);
 
   useEffect(() => {
     loadRuns();
@@ -170,6 +173,10 @@ export function BenchmarkAnalysis() {
     );
   }
 
+  const hasHiddenRuns = runs.length > RUNS_COLLAPSED_LIMIT;
+  const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_COLLAPSED_LIMIT);
+  const hiddenRunCount = Math.max(runs.length - RUNS_COLLAPSED_LIMIT, 0);
+
   const tabs = [
     { id: "folder", label: "📊 By Folder & Model" },
     { id: "performance", label: "📈 Model Performance" },
@@ -207,8 +214,9 @@ export function BenchmarkAnalysis() {
           {runs.length === 0 ? (
             <p className="text-center text-muted-foreground py-8">No runs available</p>
           ) : (
+            <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-              {runs.map((run) => (
+                {visibleRuns.map((run) => (
                 <div key={run.name} className="flex items-center gap-2 p-2 border rounded">
                   <input
                     type="checkbox"
@@ -225,6 +233,34 @@ export function BenchmarkAnalysis() {
                 </div>
               ))}
             </div>
+
+              <div className="flex items-center justify-between mt-4">
+                <p className="text-sm text-muted-foreground">
+                  {showAllRuns
+                    ? `Showing all ${runs.length} runs`
+                    : `Showing latest ${visibleRuns.length} of ${runs.length} runs`}
+                </p>
+                {hasHiddenRuns && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAllRuns((prev) => !prev)}
+                  >
+                    {showAllRuns ? (
+                      <>
+                        <ChevronUp className="h-4 w-4 mr-1" />
+                        Show fewer
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="h-4 w-4 mr-1" />
+                        Show all runs ({hiddenRunCount} more)
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -399,6 +435,7 @@ function FolderModelView({ stats }) {
 
 function DetailedStatsTable({ stats, folder }) {
   const rows = createModelComparisonTable(stats, folder);
+  const showStyleAdherence = rows.some((r) => r.styleAdherence !== null);
 
   if (rows.length === 0) {
     return <p className="text-center text-muted-foreground py-8">No data for this folder</p>;
@@ -425,6 +462,7 @@ function DetailedStatsTable({ stats, folder }) {
             <th className="text-right p-2">% Longer</th>
             <th className="text-right p-2">% Shorter</th>
             <th className="text-right p-2">Quality %</th>
+            {showStyleAdherence && <th className="text-right p-2">Style Score</th>}
             <th className="text-right p-2">Grammar</th>
             <th className="text-right p-2">Meaning</th>
             <th className="text-right p-2">Missing</th>
@@ -463,6 +501,11 @@ function DetailedStatsTable({ stats, folder }) {
               <td className={`text-right p-2 ${getQualityColor(row.qualityPct)}`}>
                 {formatPct(row.qualityPct)}
               </td>
+              {showStyleAdherence && (
+                <td className={`text-right p-2 ${getStyleAdherenceColor(row.styleAdherence)}`}>
+                  {formatMetric(row.styleAdherence, 1)}
+                </td>
+              )}
               <td className={`text-right p-2 ${getGrammarColor(row.grammarLv)}`}>
                 {formatMetric(row.grammarLv, 1)}
               </td>
